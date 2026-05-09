@@ -61,11 +61,14 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-/* ---------- mouse-dwell question loop ---------- */
-const MOUSE_POLL_MS = 600;
-const DWELL_TRIGGER_MS = 2500;
-const QUESTION_COOLDOWN_MS = 25000;
-const MIN_MOVE_FROM_LAST_Q = 200;
+/* ---------- mouse question loop (dwell + active movement) ---------- */
+const MOUSE_POLL_MS = 500;
+const DWELL_TRIGGER_MS = 1200;
+const QUESTION_COOLDOWN_MS = 10000;
+const MIN_MOVE_FROM_LAST_Q = 80;
+const ACTIVE_WINDOW_MS = 8000;
+const ACTIVE_DISTANCE_PX = 1500;
+const ACTIVE_COOLDOWN_MS = 14000;
 const REGION_W = 480;
 const REGION_H = 320;
 
@@ -74,9 +77,17 @@ let dwellStartedAt = 0;
 let lastQuestionAt = 0;
 let lastQuestionAt_pos = null;
 let mouseQuestionInFlight = false;
+let mouseTrack = []; // {t, x, y} samples for active-movement detector
+let lastActiveQuestionAt = 0;
 
 function dist(a, b) {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+function totalDistance(track) {
+  let d = 0;
+  for (let i = 1; i < track.length; i++) d += dist(track[i], track[i - 1]);
+  return d;
 }
 
 function startMouseDwellWatcher() {
@@ -88,16 +99,21 @@ function startMouseDwellWatcher() {
 
     const now = Date.now();
     const cursor = screen.getCursorScreenPoint();
+
+    // Maintain rolling window of cursor positions for active-movement detection.
+    mouseTrack.push({ t: now, x: cursor.x, y: cursor.y });
+    mouseTrack = mouseTrack.filter((p) => now - p.t < ACTIVE_WINDOW_MS);
+
     if (!mouseLast) {
       mouseLast = cursor;
       dwellStartedAt = now;
       return;
     }
 
-    if (dist(cursor, mouseLast) > 4) {
+    const moving = dist(cursor, mouseLast) > 4;
+    if (moving) {
       mouseLast = cursor;
       dwellStartedAt = now;
-      return;
     }
 
     const dwell = now - dwellStartedAt;
@@ -106,13 +122,25 @@ function startMouseDwellWatcher() {
       ? dist(cursor, lastQuestionAt_pos)
       : Infinity;
 
-    if (
+    // Branch A: cursor sat still long enough — ask about what's under it.
+    const dwellTrigger =
+      !moving &&
       dwell > DWELL_TRIGGER_MS &&
       sinceQ > QUESTION_COOLDOWN_MS &&
-      movedFromLastQ > MIN_MOVE_FROM_LAST_Q
-    ) {
+      movedFromLastQ > MIN_MOVE_FROM_LAST_Q;
+
+    // Branch B: cursor has been busy — talk during active browsing too.
+    const activeMove = totalDistance(mouseTrack);
+    const activeTrigger =
+      moving &&
+      activeMove > ACTIVE_DISTANCE_PX &&
+      now - lastActiveQuestionAt > ACTIVE_COOLDOWN_MS &&
+      sinceQ > QUESTION_COOLDOWN_MS;
+
+    if (dwellTrigger || activeTrigger) {
       lastQuestionAt = now;
       lastQuestionAt_pos = { x: cursor.x, y: cursor.y };
+      if (activeTrigger) lastActiveQuestionAt = now;
       mouseQuestionInFlight = true;
       askMouseQuestion(cursor)
         .catch((e) => console.warn("[cat] mouse question failed:", e.message))
@@ -411,7 +439,11 @@ ipcMain.handle("cat:proactiveAssist", async () => {
   try {
     await execFileP("screencapture", ["-x", "-t", "png", tmp]);
     const buf = await fs.readFile(tmp);
-    return await brain.proactiveAssist(buf);
+    let memory = { observations: [], session_count: 0 };
+    try {
+      memory = JSON.parse(await fs.readFile(MEMORY_PATH, "utf8"));
+    } catch {}
+    return await brain.proactiveAssist(buf, memory);
   } catch (e) {
     console.error("[cat] proactiveAssist failed:", e.message);
     return "";

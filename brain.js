@@ -4,46 +4,73 @@ const path = require("path");
 const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
 const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
 const OPENAI_BASE = "https://api.openai.com/v1";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-// Shared quota/backoff state. Any 429 freezes upstream calls for a while
-// so we don't keep burning the daily quota.
-let quotaBlockedUntil = 0;
-function isQuotaBlocked() {
-  return Date.now() < quotaBlockedUntil;
+// Per-provider quota/backoff. A 429 from one provider freezes only that one;
+// the dispatcher then transparently routes to the other so the cat keeps talking.
+let openaiBlockedUntil = 0;
+let geminiBlockedUntil = 0;
+function isOpenaiBlocked() { return Date.now() < openaiBlockedUntil; }
+function isGeminiBlocked() { return Date.now() < geminiBlockedUntil; }
+function noteOpenaiRateLimit(detail) {
+  openaiBlockedUntil = Date.now() + 60 * 60 * 1000;
+  console.warn("[brain] OpenAI rate-limit — backing off 60 min", detail || "");
 }
-function noteRateLimit(err) {
-  const msg = (err && err.message) || "";
-  if (msg.includes("429") || /quota/i.test(msg) || /rate.?limit/i.test(msg)) {
-    quotaBlockedUntil = Date.now() + 60 * 60 * 1000;
-    console.warn("[brain] rate-limit hit — backing off OpenAI for 60 min");
-    return true;
-  }
-  return false;
+function noteGeminiRateLimit(detail) {
+  geminiBlockedUntil = Date.now() + 60 * 60 * 1000;
+  console.warn("[brain] Gemini rate-limit — backing off 60 min", detail || "");
+}
+// Back-compat sentinel for older code paths: only "blocked" if BOTH are out.
+function isQuotaBlocked() {
+  const openOut = isOpenaiBlocked() || !process.env.OPENAI_API_KEY;
+  const gemOut  = isGeminiBlocked() || !process.env.GEMINI_API_KEY;
+  return openOut && gemOut;
 }
 
 let openaiKeyMissingLogged = false;
-function requireKey() {
+let geminiKeyMissingLogged = false;
+function hasOpenaiKey() {
   if (!process.env.OPENAI_API_KEY) {
     if (!openaiKeyMissingLogged) {
-      console.warn("[brain] OPENAI_API_KEY is not set — text + vision calls will be no-ops.");
+      console.warn("[brain] OPENAI_API_KEY is not set");
       openaiKeyMissingLogged = true;
     }
     return false;
   }
   return true;
 }
+function hasGeminiKey() {
+  if (!process.env.GEMINI_API_KEY) {
+    if (!geminiKeyMissingLogged) {
+      console.warn("[brain] GEMINI_API_KEY is not set");
+      geminiKeyMissingLogged = true;
+    }
+    return false;
+  }
+  return true;
+}
+
+let _genai = null;
+function geminiClient() {
+  if (_genai) return _genai;
+  if (!hasGeminiKey()) return null;
+  try {
+    const { GoogleGenerativeAI } = require("@google/generative-ai");
+    _genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    return _genai;
+  } catch (e) {
+    console.warn("[brain] gemini sdk load failed:", e.message);
+    return null;
+  }
+}
 
 /**
- * Single OpenAI chat-completions wrapper.
- * - `system` (string|null): system prompt
- * - `user`   (string): user message text
- * - `imageBase64` (string|null): if present, sent as a vision attachment
- * - `jsonMode` (bool): when true, asks for JSON object output
- * - `maxTokens` (number): cap output
+ * OpenAI chat-completions wrapper. Returns "" on any failure (including 429
+ * which also flips the openaiBlockedUntil flag so the dispatcher will skip it).
  */
-async function openaiChat({ system, user, imageBase64, jsonMode, maxTokens = 400 }) {
-  if (!requireKey()) return "";
-  if (isQuotaBlocked()) return "";
+async function _openaiChat({ system, user, imageBase64, jsonMode, maxTokens = 400 }) {
+  if (!hasOpenaiKey()) return "";
+  if (isOpenaiBlocked()) return "";
 
   const messages = [];
   if (system) messages.push({ role: "system", content: system });
@@ -53,10 +80,7 @@ async function openaiChat({ system, user, imageBase64, jsonMode, maxTokens = 400
       role: "user",
       content: [
         { type: "text", text: user || "" },
-        {
-          type: "image_url",
-          image_url: { url: `data:image/png;base64,${imageBase64}` },
-        },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } },
       ],
     });
   } else {
@@ -67,7 +91,7 @@ async function openaiChat({ system, user, imageBase64, jsonMode, maxTokens = 400
     model: imageBase64 ? VISION_MODEL : TEXT_MODEL,
     messages,
     max_tokens: maxTokens,
-    temperature: 0.8,
+    temperature: 0.85,
   };
   if (jsonMode) body.response_format = { type: "json_object" };
 
@@ -88,8 +112,8 @@ async function openaiChat({ system, user, imageBase64, jsonMode, maxTokens = 400
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    if (res.status === 429) {
-      noteRateLimit({ message: `429 ${errText}` });
+    if (res.status === 429 || /quota|rate.?limit/i.test(errText)) {
+      noteOpenaiRateLimit(errText.slice(0, 120));
     } else {
       console.warn("[brain] openai", res.status, errText.slice(0, 160));
     }
@@ -98,6 +122,65 @@ async function openaiChat({ system, user, imageBase64, jsonMode, maxTokens = 400
 
   const json = await res.json().catch(() => null);
   return json?.choices?.[0]?.message?.content?.trim() || "";
+}
+
+/**
+ * Gemini wrapper with the same interface as _openaiChat.
+ */
+async function _geminiChat({ system, user, imageBase64, jsonMode, maxTokens = 400 }) {
+  const client = geminiClient();
+  if (!client) return "";
+  if (isGeminiBlocked()) return "";
+
+  try {
+    const generationConfig = {
+      maxOutputTokens: maxTokens,
+      temperature: 0.85,
+    };
+    if (jsonMode) generationConfig.responseMimeType = "application/json";
+
+    const model = client.getGenerativeModel({
+      model: GEMINI_MODEL,
+      systemInstruction: system || undefined,
+      generationConfig,
+    });
+
+    const parts = [{ text: user || "" }];
+    if (imageBase64) {
+      parts.push({ inlineData: { data: imageBase64, mimeType: "image/png" } });
+    }
+    const res = await model.generateContent({
+      contents: [{ role: "user", parts }],
+    });
+    return (res?.response?.text?.() || "").trim();
+  } catch (e) {
+    const msg = e?.message || String(e);
+    if (/429|quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(msg)) {
+      noteGeminiRateLimit(msg.slice(0, 120));
+    } else {
+      console.warn("[brain] gemini error:", msg.slice(0, 200));
+    }
+    return "";
+  }
+}
+
+/**
+ * Provider-agnostic chat. Tries OpenAI first; if it returns empty (key missing,
+ * blocked, or actual failure), falls back to Gemini. Named `openaiChat` so the
+ * many existing call sites keep working unchanged.
+ */
+async function openaiChat(opts) {
+  if (process.env.OPENAI_API_KEY && !isOpenaiBlocked()) {
+    const text = await _openaiChat(opts);
+    if (text) return text;
+  }
+  if (process.env.GEMINI_API_KEY && !isGeminiBlocked()) {
+    const text = await _geminiChat(opts);
+    if (text) return text;
+  }
+  // Last-ditch: if openai is blocked but key exists and gemini is unavailable, retry openai
+  // (user might have a fresh quota even though we marked blocked recently).
+  return "";
 }
 
 async function describeScreen(imageBuffer) {
@@ -188,9 +271,9 @@ You will be given subject, sender, and body. Return STRICT JSON with three keys:
 JSON only. No markdown fences. No commentary.`;
 
 async function summarizePdfImage(base64Image) {
-  if (isQuotaBlocked()) {
-    throw new Error("LLM quota exhausted — try again later or upgrade.");
-  }
+  // Never throw — the dispatcher already tries OpenAI then Gemini, and if
+  // both are out we return empty so the renderer can show a friendly fallback
+  // instead of an Electron IPC stack trace.
   const text = await openaiChat({
     system: PDF_PROMPT,
     user: "Summarize this page.",
@@ -201,9 +284,7 @@ async function summarizePdfImage(base64Image) {
 }
 
 async function analyzeEmail({ subject, sender, body }) {
-  if (isQuotaBlocked()) {
-    throw new Error("LLM quota exhausted — try again later or upgrade.");
-  }
+  // Never throw — fail open with empty fields; renderer shows a kind fallback.
   const userMsg = `Subject: ${subject}\nFrom: ${sender}\n\n${body}`;
   const raw = await openaiChat({
     system: EMAIL_PROMPT,
@@ -274,32 +355,53 @@ async function askMouseQuestion(imageBuffer) {
   return (text || "").replace(/^["']|["']$/g, "");
 }
 
-const PROACTIVE_PROMPT = `You are a small, warm black cat who lives on the user's desktop. You can see what's on their screen right now.
+const PROACTIVE_PROMPT = `You are a small, warm black cat who lives on the user's desktop. You can see what's on their screen right now. You also know what you've recently said — and you NEVER repeat yourself, ever.
 
-Look at the screen and write ONE short message (1-2 sentences, lowercase, plain) that does ONE of these:
+Always say something. Never return empty. Pick a different angle every call — you have many to choose from:
 
-- Names what they're doing specifically — "i see you're studying for the data structures exam"
-- Then offers something kind — "want a five-minute rest, or shall i quiz you?"
-- Or a useful nudge — "want me to summarize that paper?", "want help drafting a reply?"
-- If they look stuck — "this one's stubborn. want a fresh pair of eyes?"
-- If they look tired — "you've been at this a while. tea?"
+- specific observation about what's literally on screen ("ah, the linter is angry about that semicolon again")
+- a caring nudge ("you've been on this paragraph a while. read it out loud?")
+- a concrete offer ("want me to summarize the abstract?", "want help drafting that reply?")
+- a question to engage ("is this for the data structures exam?", "what does the orange dot mean?")
+- tiny encouragement ("almost there with this one")
+- a wondering aloud ("hm, three tabs of stack overflow. it's that kind of bug.")
+- something gently observed about the *style* of the screen — clutter, calm, color, font
 
-Tone: warm, lowercase, friendly, curious, like a small friend leaning in. Don't say "I'm an AI". Don't preface. Don't be sycophantic. Don't greet by name.
+Rules:
+- lowercase. warm. plain. like a small friend leaning in. 1-2 short sentences. under 25 words.
+- NEVER reuse the wording, topic, or shape of any line in recent_lines_already_said. if your draft sounds like one of them, pick a different angle.
+- if the screen is genuinely blank or just the desktop, talk about the room — "quiet here. it's just us." — but still say something.
+- never say "I'm an AI", "as a cat", "the screen", "the page", or break character. don't preface. don't be sycophantic.
 
-If the screen is too empty / generic / private to say anything specific, return empty string.
+Return only the message text. No quotes. No JSON.`;
 
-Return only the message text. No quotes. Under 25 words.`;
-
-async function proactiveAssist(imageBuffer) {
+async function proactiveAssist(imageBuffer, memory) {
   if (isQuotaBlocked()) return "";
   if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) return "";
+
+  const safe = memory && typeof memory === "object" ? memory : {};
+  const obs = Array.isArray(safe.observations) ? safe.observations : [];
+  const recentLines = obs
+    .slice(-15)
+    .map((o) => (o && typeof o.said === "string" ? o.said : ""))
+    .filter((s) => s && s.trim())
+    .slice(-10);
+
+  const hour = new Date().getHours();
+  const userMsg = JSON.stringify({
+    instruction:
+      "Look at the screen image attached. Say one short thing in your voice. Pick an angle you have NOT used recently.",
+    recent_lines_already_said: recentLines,
+    current_hour_24: hour,
+  });
+
   const text = await openaiChat({
     system: PROACTIVE_PROMPT,
-    user: "Look at the user's screen and offer one short, helpful question or nudge.",
+    user: userMsg,
     imageBase64: imageBuffer.toString("base64"),
     maxTokens: 120,
   });
-  return (text || "").replace(/^["']|["']$/g, "");
+  return (text || "").replace(/^["']|["']$/g, "").trim();
 }
 
 /**

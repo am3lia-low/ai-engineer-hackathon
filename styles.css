@@ -46,6 +46,22 @@ body {
 #cat-wrapper[data-profile="low"]     { --aura: rgba(120, 180, 255, 0.55); --aura-strong: rgba(120, 180, 255, 0.95); }
 #cat-wrapper[data-profile="whisper"] { --aura: rgba(200, 170, 255, 0.55); --aura-strong: rgba(200, 170, 255, 0.95); }
 
+/* per-profile ambient animation — body language differs per voice */
+#cat-wrapper.anim-soft    { animation: breathe-soft    4.4s ease-in-out infinite; }
+#cat-wrapper.anim-curious { animation: breathe-curious 2.6s ease-in-out infinite; }
+#cat-wrapper.anim-bright  { animation: breathe-bright  1.8s ease-in-out infinite; }
+#cat-wrapper.anim-low     { animation: breathe-low     5.2s ease-in-out infinite; }
+#cat-wrapper.anim-whisper { animation: breathe-whisper 6.4s ease-in-out infinite; }
+
+/* talking always wins over per-profile breath */
+#cat-wrapper.talking.anim-soft,
+#cat-wrapper.talking.anim-curious,
+#cat-wrapper.talking.anim-bright,
+#cat-wrapper.talking.anim-low,
+#cat-wrapper.talking.anim-whisper {
+  animation: talk-bob 0.42s ease-in-out infinite;
+}
+
 #cat-wrapper:active {
   cursor: grabbing;
 }
@@ -631,4 +647,28 @@ body {
 @keyframes halo-pulse {
   0%, 100% { opacity: 0.85; transform: scale(1); }
   50%      { opacity: 1;    transform: scale(1.12); }
+}
+
+/* per-profile ambient breaths — each one feels distinct in pace and amplitude */
+@keyframes breathe-soft {
+  0%, 100% { transform: scale(1) translateY(0) rotate(0deg); }
+  50%      { transform: scale(1.025) translateY(-1px) rotate(0deg); }
+}
+@keyframes breathe-curious {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  25%      { transform: scale(1.03) rotate(-1.6deg); }
+  75%      { transform: scale(1.03) rotate(1.6deg); }
+}
+@keyframes breathe-bright {
+  0%, 100% { transform: scale(1) translateY(0); }
+  40%      { transform: scale(1.06) translateY(-4px); }
+  70%      { transform: scale(1.02) translateY(-1px); }
+}
+@keyframes breathe-low {
+  0%, 100% { transform: scale(1) translateY(0); }
+  50%      { transform: scale(1.05) translateY(2px); }
+}
+@keyframes breathe-whisper {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.012); }
 }

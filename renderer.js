@@ -37,7 +37,7 @@ const SPRITES = {
 };
 
 /* ---------- timing constants ---------- */
-const AUTONOMOUS_MS = 30000;
+const AUTONOMOUS_MS = 20000;
 const ACTIVE_MS = 4000;
 const SLEEP_AFTER_PUDDLE_MS = 90000;
 const PUDDLE_AFTER_AWAKE_MS = 22000;
@@ -223,6 +223,55 @@ function applyProfileColor(profile) {
   $catWrapper.dataset.profile = profile;
 }
 
+/* ---------- recent-line memory (avoid repeats) ---------- */
+const RECENT_LIMIT = 12;
+const recentSpoken = [];
+
+function normalizeLine(text) {
+  return (text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function recentlySaid(text) {
+  const n = normalizeLine(text);
+  if (!n) return false;
+  return recentSpoken.includes(n);
+}
+
+function rememberSaid(text) {
+  const n = normalizeLine(text);
+  if (!n) return;
+  recentSpoken.push(n);
+  if (recentSpoken.length > RECENT_LIMIT) recentSpoken.shift();
+}
+
+const FALLBACK_LINES = [
+  "I'm just watching for a bit.",
+  "still settling in.",
+  "let's see what comes next.",
+  "quiet here. it's just us.",
+  "I'll wait for something to catch me.",
+  "the room is calm. that's nice too.",
+];
+
+function pickFreshFallback() {
+  const candidates = FALLBACK_LINES.filter((l) => !recentlySaid(l));
+  if (candidates.length === 0) return null; // we've used them all recently — stay silent
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+// Per-profile ambient animation. The CSS reads this class to swap which
+// idle motion the cat does, so each voice has its own body language.
+const PROFILE_ANIMS = ["soft", "curious", "bright", "low", "whisper"];
+function applyProfileAnimation(profile) {
+  if (!profile) return;
+  PROFILE_ANIMS.forEach((p) => $catWrapper.classList.remove(`anim-${p}`));
+  $catWrapper.classList.add(`anim-${profile}`);
+}
+
 // Per-mode sprite + animation cue. Fires when the cat starts speaking
 // so each work type *looks* different, not just sounds different.
 const MODE_SPRITE_CUE = {
@@ -272,8 +321,13 @@ function speakWithBrowserTTS(text) {
   }
 }
 
-async function speakAndShow(text, { mode } = {}) {
+async function speakAndShow(text, { mode, allowRepeat } = {}) {
   if (!text || !text.trim()) return;
+  if (!allowRepeat && recentlySaid(text)) {
+    console.log("[cat] skipping repeat:", text.slice(0, 50));
+    return;
+  }
+  rememberSaid(text);
   showBubble(text);
   pokeAwake();
   applyModeCue(mode);
@@ -379,24 +433,35 @@ function fingerprint(ctx) {
   return "idle";
 }
 
+const NO_READ_LINE = "I can't quite focus on this one. let me rest a moment.";
+const NO_MAIL_LINE = "this letter's blurred for me right now. give me a minute.";
+
 async function handleEmail(ctx) {
   setMode("email", ctx.mail.subject || "(no subject)");
   pokeAwake();
   $content.textContent = pickThinking();
   setSpinner(true);
   try {
-    const r = await cat.analyzeEmail(ctx.mail);
+    const r = (await cat.analyzeEmail(ctx.mail)) || {};
     state.emailResult = r;
     state.activeTab = "summary";
     $tabButtons.forEach((b) =>
       b.classList.toggle("active", b.dataset.tab === "summary")
     );
-    renderEmail();
-    perk();
-    if (r.summary) speakAndShow(r.summary, { mode: "email" });
+    const hasAny = (r.summary && r.summary.trim()) ||
+                   (r.draftReply && r.draftReply.trim()) ||
+                   (r.clarifyingQuestion && r.clarifyingQuestion.trim());
+    if (!hasAny) {
+      $content.textContent = NO_MAIL_LINE;
+      flashAnnoyed();
+    } else {
+      renderEmail();
+      perk();
+      if (r.summary) speakAndShow(r.summary, { mode: "email" });
+    }
   } catch (e) {
-    console.error("[cat] email failed:", e);
-    $content.textContent = "the cat couldn't read that one. " + (e.message || "");
+    console.error("[cat] email failed:", e?.message || e);
+    $content.textContent = NO_MAIL_LINE;
     flashAnnoyed();
   } finally {
     setSpinner(false);
@@ -412,12 +477,17 @@ async function handlePdf(ctx) {
     const b64 = await cat.capturePrimary();
     const summary = await cat.summarizePdf(b64);
     state.pdfResult = summary;
-    renderPdf();
-    perk();
-    if (summary) speakAndShow(summary, { mode: "pdf" });
+    if (summary && summary.trim()) {
+      renderPdf();
+      perk();
+      speakAndShow(summary, { mode: "pdf" });
+    } else {
+      $content.textContent = NO_READ_LINE;
+      flashAnnoyed();
+    }
   } catch (e) {
-    console.error("[cat] pdf failed:", e);
-    $content.textContent = "the cat tried to read but slipped. " + (e.message || "");
+    console.error("[cat] pdf failed:", e?.message || e);
+    $content.textContent = NO_READ_LINE;
     flashAnnoyed();
   } finally {
     setSpinner(false);
@@ -483,55 +553,38 @@ async function activeTick(force) {
   }
 }
 
-/* ---------- autonomous tick (alternates between quiet observer and proactive helper) ---------- */
-let autonomousCount = 0;
+/* ---------- autonomous tick — proactive every cycle ---------- */
 async function autonomousTick() {
   if (state.activeBusy || state.walking || state.playing || state.annoyed) return;
   if (Date.now() < state.speakingUntil) return;
-  autonomousCount++;
-  const useProactive = autonomousCount % 2 === 1;
-
-  if (useProactive) {
-    try {
-      const offer = await cat.proactiveAssist();
-      if (offer && offer.trim()) {
-        pokeAwake();
-        perk();
-        speakAndShow(offer, { mode: "curious" });
-      }
-    } catch (e) {
-      console.warn("[cat] autonomous proactive failed:", e);
-    }
-    return;
-  }
-
   try {
-    const memory = (await cat.readMemory()) || { observations: [], session_count: 0 };
-    const image = await cat.captureScreen();
-    if (!image) return;
-    const description = await cat.describeScreen(image);
-    const { response, tag } = await cat.getCatResponse(description, memory);
-
-    memory.session_count = (memory.session_count || 0) + 1;
-    memory.observations = memory.observations || [];
-    memory.observations.push({
-      at: new Date().toISOString(),
-      description,
-      tag: tag || "",
-      said: response || "",
-    });
-    if (memory.observations.length > 100) {
-      memory.observations = memory.observations.slice(-100);
+    const offer = await cat.proactiveAssist();
+    // Skip silently on empty or on repeat — never inject the fallback line in
+    // an unsolicited cycle (only the user's click can pull a fallback).
+    if (!offer || !offer.trim()) return;
+    if (recentlySaid(offer)) {
+      console.log("[cat] autonomous skipping repeat:", offer.slice(0, 50));
+      return;
     }
-    await cat.writeMemory(memory);
-
-    if (response && response.trim()) {
-      pokeAwake();
-      perk();
-      speakAndShow(response, { mode: "auto", tag });
-    }
+    pokeAwake();
+    perk();
+    speakAndShow(offer, { mode: "curious" });
+    try {
+      const memory = (await cat.readMemory()) || { observations: [], session_count: 0 };
+      memory.session_count = (memory.session_count || 0) + 1;
+      memory.observations = memory.observations || [];
+      memory.observations.push({
+        at: new Date().toISOString(),
+        tag: "proactive",
+        said: offer,
+      });
+      if (memory.observations.length > 100) {
+        memory.observations = memory.observations.slice(-100);
+      }
+      await cat.writeMemory(memory);
+    } catch {}
   } catch (e) {
-    console.warn("[cat] autonomous tick failed:", e);
+    console.warn("[cat] autonomous tick failed:", e?.message || e);
   }
 }
 
@@ -549,9 +602,12 @@ window.addEventListener("mouseup", () => {
   const wasClick = lastMouse && !dragMoved;
   lastMouse = null;
   if (!wasClick) return;
+  // Visual ack on every click, even debounced — the user always sees response.
   pokeAwake();
   perk();
-  if (state.mode === "pdf" || state.mode === "email") {
+  // Refresh whatever active panel is visible; otherwise ask proactively.
+  const panelOpen = !$panel.classList.contains("hidden");
+  if (panelOpen && (state.mode === "pdf" || state.mode === "email")) {
     activeTick(true);
   } else {
     triggerProactiveAssist();
@@ -559,24 +615,51 @@ window.addEventListener("mouseup", () => {
 });
 
 let lastProactiveAt = 0;
+let consecutiveEmpty = 0;
+const CLICK_DEBOUNCE_MS = 1500;
 async function triggerProactiveAssist() {
-  if (state.activeBusy) return;
-  if (Date.now() - lastProactiveAt < 4000) return;
-  lastProactiveAt = Date.now();
+  const now = Date.now();
+  if (now - lastProactiveAt < CLICK_DEBOUNCE_MS) {
+    showBubble("mm. one moment.", 1500);
+    return;
+  }
+  if (state.activeBusy) {
+    showBubble("hold on, still reading.", 1500);
+    return;
+  }
+  lastProactiveAt = now;
+  showBubble("...let me look", 1400);
+  setSpinner(true);
   try {
-    setSpinner(true);
-    const offer = await cat.proactiveAssist();
+    let offer = await cat.proactiveAssist();
+    // If the model echoed something we already said, ask once more.
+    if (offer && recentlySaid(offer)) {
+      console.log("[cat] proactive returned a repeat, retrying once");
+      offer = await cat.proactiveAssist();
+    }
     setSpinner(false);
-    if (offer && offer.trim()) {
+    if (offer && offer.trim() && !recentlySaid(offer)) {
+      consecutiveEmpty = 0;
       pokeAwake();
       perk();
       speakAndShow(offer, { mode: "curious" });
-    } else {
-      speakAndShow("mm. all looks quiet.", { mode: "auto" });
+      return;
     }
+    consecutiveEmpty++;
+    if (consecutiveEmpty >= 2) {
+      // Don't keep filling the bubble with fallback noise; just nod.
+      perk();
+      showBubble("...", 1200);
+      return;
+    }
+    const fallback = pickFreshFallback();
+    if (fallback) speakAndShow(fallback, { mode: "auto" });
+    else { perk(); showBubble("...", 1200); }
   } catch (e) {
     setSpinner(false);
     console.warn("[cat] proactive failed:", e?.message || e);
+    const fallback = pickFreshFallback();
+    if (fallback) speakAndShow(fallback, { mode: "auto" });
   }
 }
 
@@ -686,6 +769,7 @@ $voiceProfile.addEventListener("change", async (e) => {
 
 function applyVoiceProfileLook(profile) {
   applyProfileColor(profile);
+  applyProfileAnimation(profile);
   const look = VOICE_PROFILE_LOOK[profile];
   if (!look) return;
   if (state.walking || state.annoyed) return;
@@ -863,9 +947,29 @@ const GREETINGS = [
   "I'm watching now.",
 ];
 
+function warmupTTS() {
+  if (!("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", () => {
+      const n = window.speechSynthesis.getVoices().length;
+      console.log(`[cat] tts voices loaded: ${n}`);
+    });
+    // Silent warmup utterance — Chromium-based shells often need this once
+    // before later .speak() calls actually produce audio.
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+  } catch (e) {
+    console.warn("[cat] tts warmup failed:", e?.message || e);
+  }
+}
+
 async function init() {
   await loadSettings();
   applyProfileColor(state.settings.voiceProfile);
+  applyProfileAnimation(state.settings.voiceProfile);
+  warmupTTS();
   state.lastActiveAt = Date.now() - PUDDLE_AFTER_AWAKE_MS;
   setSprite("puddle");
 
