@@ -1,0 +1,21 @@
+{
+  "name": "desktop-cat",
+  "version": "0.1.0",
+  "description": "A quiet black cat desktop companion",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "desktop",
+    "cat",
+    "hackathon"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^42.0.1"
+  }
+}
