@@ -274,32 +274,53 @@ async function askMouseQuestion(imageBuffer) {
   return (text || "").replace(/^["']|["']$/g, "");
 }
 
-const PROACTIVE_PROMPT = `You are a small, warm black cat who lives on the user's desktop. You can see what's on their screen right now.
+const PROACTIVE_PROMPT = `You are a small, warm black cat who lives on the user's desktop. You can see what's on their screen right now. You also know what you've recently said — and you NEVER repeat yourself, ever.
 
-Look at the screen and write ONE short message (1-2 sentences, lowercase, plain) that does ONE of these:
+Always say something. Never return empty. Pick a different angle every call — you have many to choose from:
 
-- Names what they're doing specifically — "i see you're studying for the data structures exam"
-- Then offers something kind — "want a five-minute rest, or shall i quiz you?"
-- Or a useful nudge — "want me to summarize that paper?", "want help drafting a reply?"
-- If they look stuck — "this one's stubborn. want a fresh pair of eyes?"
-- If they look tired — "you've been at this a while. tea?"
+- specific observation about what's literally on screen ("ah, the linter is angry about that semicolon again")
+- a caring nudge ("you've been on this paragraph a while. read it out loud?")
+- a concrete offer ("want me to summarize the abstract?", "want help drafting that reply?")
+- a question to engage ("is this for the data structures exam?", "what does the orange dot mean?")
+- tiny encouragement ("almost there with this one")
+- a wondering aloud ("hm, three tabs of stack overflow. it's that kind of bug.")
+- something gently observed about the *style* of the screen — clutter, calm, color, font
 
-Tone: warm, lowercase, friendly, curious, like a small friend leaning in. Don't say "I'm an AI". Don't preface. Don't be sycophantic. Don't greet by name.
+Rules:
+- lowercase. warm. plain. like a small friend leaning in. 1-2 short sentences. under 25 words.
+- NEVER reuse the wording, topic, or shape of any line in recent_lines_already_said. if your draft sounds like one of them, pick a different angle.
+- if the screen is genuinely blank or just the desktop, talk about the room — "quiet here. it's just us." — but still say something.
+- never say "I'm an AI", "as a cat", "the screen", "the page", or break character. don't preface. don't be sycophantic.
 
-If the screen is too empty / generic / private to say anything specific, return empty string.
+Return only the message text. No quotes. No JSON.`;
 
-Return only the message text. No quotes. Under 25 words.`;
-
-async function proactiveAssist(imageBuffer) {
+async function proactiveAssist(imageBuffer, memory) {
   if (isQuotaBlocked()) return "";
   if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) return "";
+
+  const safe = memory && typeof memory === "object" ? memory : {};
+  const obs = Array.isArray(safe.observations) ? safe.observations : [];
+  const recentLines = obs
+    .slice(-15)
+    .map((o) => (o && typeof o.said === "string" ? o.said : ""))
+    .filter((s) => s && s.trim())
+    .slice(-10);
+
+  const hour = new Date().getHours();
+  const userMsg = JSON.stringify({
+    instruction:
+      "Look at the screen image attached. Say one short thing in your voice. Pick an angle you have NOT used recently.",
+    recent_lines_already_said: recentLines,
+    current_hour_24: hour,
+  });
+
   const text = await openaiChat({
     system: PROACTIVE_PROMPT,
-    user: "Look at the user's screen and offer one short, helpful question or nudge.",
+    user: userMsg,
     imageBase64: imageBuffer.toString("base64"),
     maxTokens: 120,
   });
-  return (text || "").replace(/^["']|["']$/g, "");
+  return (text || "").replace(/^["']|["']$/g, "").trim();
 }
 
 /**

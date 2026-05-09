@@ -223,6 +223,46 @@ function applyProfileColor(profile) {
   $catWrapper.dataset.profile = profile;
 }
 
+/* ---------- recent-line memory (avoid repeats) ---------- */
+const RECENT_LIMIT = 12;
+const recentSpoken = [];
+
+function normalizeLine(text) {
+  return (text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function recentlySaid(text) {
+  const n = normalizeLine(text);
+  if (!n) return false;
+  return recentSpoken.includes(n);
+}
+
+function rememberSaid(text) {
+  const n = normalizeLine(text);
+  if (!n) return;
+  recentSpoken.push(n);
+  if (recentSpoken.length > RECENT_LIMIT) recentSpoken.shift();
+}
+
+const FALLBACK_LINES = [
+  "I'm just watching for a bit.",
+  "still settling in.",
+  "let's see what comes next.",
+  "quiet here. it's just us.",
+  "I'll wait for something to catch me.",
+  "the room is calm. that's nice too.",
+];
+
+function pickFreshFallback() {
+  const candidates = FALLBACK_LINES.filter((l) => !recentlySaid(l));
+  if (candidates.length === 0) return null; // we've used them all recently — stay silent
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
 // Per-profile ambient animation. The CSS reads this class to swap which
 // idle motion the cat does, so each voice has its own body language.
 const PROFILE_ANIMS = ["soft", "curious", "bright", "low", "whisper"];
@@ -281,8 +321,13 @@ function speakWithBrowserTTS(text) {
   }
 }
 
-async function speakAndShow(text, { mode } = {}) {
+async function speakAndShow(text, { mode, allowRepeat } = {}) {
   if (!text || !text.trim()) return;
+  if (!allowRepeat && recentlySaid(text)) {
+    console.log("[cat] skipping repeat:", text.slice(0, 50));
+    return;
+  }
+  rememberSaid(text);
   showBubble(text);
   pokeAwake();
   applyModeCue(mode);
@@ -498,26 +543,30 @@ async function autonomousTick() {
   if (Date.now() < state.speakingUntil) return;
   try {
     const offer = await cat.proactiveAssist();
-    if (offer && offer.trim()) {
-      pokeAwake();
-      perk();
-      speakAndShow(offer, { mode: "curious" });
-      // Also log to memory so the cat remembers what she's said.
-      try {
-        const memory = (await cat.readMemory()) || { observations: [], session_count: 0 };
-        memory.session_count = (memory.session_count || 0) + 1;
-        memory.observations = memory.observations || [];
-        memory.observations.push({
-          at: new Date().toISOString(),
-          tag: "proactive",
-          said: offer,
-        });
-        if (memory.observations.length > 100) {
-          memory.observations = memory.observations.slice(-100);
-        }
-        await cat.writeMemory(memory);
-      } catch {}
+    // Skip silently on empty or on repeat — never inject the fallback line in
+    // an unsolicited cycle (only the user's click can pull a fallback).
+    if (!offer || !offer.trim()) return;
+    if (recentlySaid(offer)) {
+      console.log("[cat] autonomous skipping repeat:", offer.slice(0, 50));
+      return;
     }
+    pokeAwake();
+    perk();
+    speakAndShow(offer, { mode: "curious" });
+    try {
+      const memory = (await cat.readMemory()) || { observations: [], session_count: 0 };
+      memory.session_count = (memory.session_count || 0) + 1;
+      memory.observations = memory.observations || [];
+      memory.observations.push({
+        at: new Date().toISOString(),
+        tag: "proactive",
+        said: offer,
+      });
+      if (memory.observations.length > 100) {
+        memory.observations = memory.observations.slice(-100);
+      }
+      await cat.writeMemory(memory);
+    } catch {}
   } catch (e) {
     console.warn("[cat] autonomous tick failed:", e?.message || e);
   }
@@ -550,34 +599,51 @@ window.addEventListener("mouseup", () => {
 });
 
 let lastProactiveAt = 0;
+let consecutiveEmpty = 0;
 const CLICK_DEBOUNCE_MS = 1500;
 async function triggerProactiveAssist() {
   const now = Date.now();
   if (now - lastProactiveAt < CLICK_DEBOUNCE_MS) {
-    showBubble("mm. one moment.", 1800);
+    showBubble("mm. one moment.", 1500);
     return;
   }
   if (state.activeBusy) {
-    showBubble("hold on, still reading.", 1800);
+    showBubble("hold on, still reading.", 1500);
     return;
   }
   lastProactiveAt = now;
-  showBubble("...let me look", 1500);
+  showBubble("...let me look", 1400);
   setSpinner(true);
   try {
-    const offer = await cat.proactiveAssist();
+    let offer = await cat.proactiveAssist();
+    // If the model echoed something we already said, ask once more.
+    if (offer && recentlySaid(offer)) {
+      console.log("[cat] proactive returned a repeat, retrying once");
+      offer = await cat.proactiveAssist();
+    }
     setSpinner(false);
-    if (offer && offer.trim()) {
+    if (offer && offer.trim() && !recentlySaid(offer)) {
+      consecutiveEmpty = 0;
       pokeAwake();
       perk();
       speakAndShow(offer, { mode: "curious" });
-    } else {
-      speakAndShow("hm. nothing catches my eye right now.", { mode: "auto" });
+      return;
     }
+    consecutiveEmpty++;
+    if (consecutiveEmpty >= 2) {
+      // Don't keep filling the bubble with fallback noise; just nod.
+      perk();
+      showBubble("...", 1200);
+      return;
+    }
+    const fallback = pickFreshFallback();
+    if (fallback) speakAndShow(fallback, { mode: "auto" });
+    else { perk(); showBubble("...", 1200); }
   } catch (e) {
     setSpinner(false);
     console.warn("[cat] proactive failed:", e?.message || e);
-    speakAndShow("the cat tried to look but slipped.", { mode: "auto" });
+    const fallback = pickFreshFallback();
+    if (fallback) speakAndShow(fallback, { mode: "auto" });
   }
 }
 

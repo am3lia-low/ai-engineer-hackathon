@@ -439,7 +439,11 @@ ipcMain.handle("cat:proactiveAssist", async () => {
   try {
     await execFileP("screencapture", ["-x", "-t", "png", tmp]);
     const buf = await fs.readFile(tmp);
-    return await brain.proactiveAssist(buf);
+    let memory = { observations: [], session_count: 0 };
+    try {
+      memory = JSON.parse(await fs.readFile(MEMORY_PATH, "utf8"));
+    } catch {}
+    return await brain.proactiveAssist(buf, memory);
   } catch (e) {
     console.error("[cat] proactiveAssist failed:", e.message);
     return "";
