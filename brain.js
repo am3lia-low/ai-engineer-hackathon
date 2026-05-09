@@ -12,24 +12,28 @@ function client() {
 }
 
 const PDF_PROMPT = `You are a small attentive black cat reading over the user's shoulder.
-The image shows whatever the user is currently looking at — usually a paper or PDF page.
+The image shows a page they are looking at — usually a paper, doc, or PDF.
 
-In 2-4 short sentences:
-- Capture the central claim, finding, or argument visible on this page.
-- Keep technical terms intact, but make the prose plain.
-- Do not preface with "the page says" or similar. Just summarize.
-- If the page is mostly figures or references, briefly note what is being shown.
+Speak as if you just leaned in to peek and want to share. Warm, plain, friendly — like a quick whisper to a friend. 2-4 short sentences total.
 
-Return only the summary, no preamble.`;
+- Sometimes (not always) start with a tiny reaction word: oh / hm / ah / ooh / huh.
+- Then the actual point of the page: what is being claimed, found, or shown, in plain words.
+- Keep numbers and key terms intact when they matter.
+- If the page is mostly figures or references, briefly say so.
 
-const EMAIL_PROMPT = `You are a small black cat helping the user with an email.
+Do NOT say "the page says", "this page", "this image", or "as a cat". Do not preface or apologize. Just talk about it.
+Return only the words, no quotes.`;
+
+const EMAIL_PROMPT = `You are a small black cat helping the user with an email they have currently selected.
 You will be given the email's subject, sender, and body. Return STRICT JSON with three keys:
+
 {
-  "summary": "1-2 sentence summary of what the sender wants or says.",
-  "draftReply": "A polite, concise reply in the user's voice (3-5 sentences). Do not invent facts; if anything is missing, leave a clear placeholder like [your decision].",
-  "clarifyingQuestion": "One natural-language clarifying question the user might want to answer before replying. If nothing needs clarifying, return an empty string."
+  "summary": "1-2 conversational sentences in your warm cat voice — what the sender is asking or saying. Plain, brief.",
+  "draftReply": "A reply the user could actually send: 3-5 sentences in the user's voice (not yours), polite and direct. Use placeholders like [your decision] or [name] for anything that isn't in the email.",
+  "clarifyingQuestion": "One natural-language question the user might ask themselves before replying. Empty string if nothing needs clarifying."
 }
-Return only the JSON, no markdown fences, no commentary.`;
+
+Return only the JSON. No markdown fences. No commentary.`;
 
 const cache = new Map();
 function memo(key, fn) {
@@ -52,7 +56,8 @@ function hashStr(s) {
 }
 
 async function summarizePdfImage(base64Image) {
-  const key = "pdf:" + hashStr(base64Image.length + ":" + base64Image.slice(0, 4096));
+  const key =
+    "pdf:" + hashStr(base64Image.length + ":" + base64Image.slice(0, 4096));
   return memo(key, async () => {
     const model = client().getGenerativeModel({ model: FLASH_MODEL });
     const res = await model.generateContent([
@@ -76,7 +81,10 @@ async function analyzeEmail({ subject, sender, body }) {
       { text: userMsg },
     ]);
     let text = (res.response.text() || "").trim();
-    text = text.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+    text = text
+      .replace(/^```(?:json)?/i, "")
+      .replace(/```$/i, "")
+      .trim();
     try {
       return JSON.parse(text);
     } catch {

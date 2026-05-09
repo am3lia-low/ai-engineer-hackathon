@@ -31,19 +31,56 @@ body {
   align-items: center;
   justify-content: center;
   cursor: grab;
-  animation: breathe 4s ease-in-out infinite;
+  animation: breathe 3.6s ease-in-out infinite;
+  transform-origin: 50% 75%;
 }
 
 #cat-wrapper:active {
   cursor: grabbing;
 }
 
+#cat-wrapper.thinking {
+  animation: breathe-fast 1.6s ease-in-out infinite;
+}
+
 #cat {
   width: 180px;
   height: 180px;
-  object-fit: contain;
   pointer-events: none;
   filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.35));
+  overflow: visible;
+}
+
+#cat .eye {
+  transform-origin: center;
+  transform-box: fill-box;
+  transition: transform 90ms ease-in-out;
+}
+
+#cat .eye.blink {
+  transform: scaleY(0.06);
+}
+
+#cat-wrapper.thinking #cat .eye {
+  transform: scaleY(0.5);
+}
+
+#cat .tail {
+  transform-box: fill-box;
+  transform-origin: 0% 50%;
+  animation: tail-twitch 6.5s ease-in-out infinite;
+}
+
+#cat .ear-left {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: ear-twitch-left 11s ease-in-out infinite;
+}
+
+#cat .ear-right {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: ear-twitch-right 13s ease-in-out infinite;
 }
 
 #panel {
@@ -223,7 +260,62 @@ body {
     transform: scale(1);
   }
   50% {
-    transform: scale(1.02);
+    transform: scale(1.035);
+  }
+}
+
+@keyframes breathe-fast {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+@keyframes tail-twitch {
+  0%,
+  74%,
+  100% {
+    transform: rotate(0deg);
+  }
+  80% {
+    transform: rotate(-10deg);
+  }
+  87% {
+    transform: rotate(7deg);
+  }
+  94% {
+    transform: rotate(-3deg);
+  }
+}
+
+@keyframes ear-twitch-left {
+  0%,
+  92%,
+  100% {
+    transform: rotate(0deg);
+  }
+  95% {
+    transform: rotate(-7deg);
+  }
+  98% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes ear-twitch-right {
+  0%,
+  88%,
+  100% {
+    transform: rotate(0deg);
+  }
+  92% {
+    transform: rotate(6deg);
+  }
+  96% {
+    transform: rotate(0deg);
   }
 }
 

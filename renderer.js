@@ -11,8 +11,16 @@ const $content = document.getElementById("panel-content");
 const $actions = document.getElementById("panel-actions");
 const $copy = document.getElementById("copy-btn");
 const $catWrapper = document.getElementById("cat-wrapper");
+const $eyes = document.querySelectorAll("#cat .eye");
 
 const POLL_MS = 4000;
+const THINKING_LINES = [
+  "...let me peek",
+  "...one moment",
+  "...reading",
+  "hm, hold on",
+  "...looking",
+];
 
 const state = {
   mode: "idle",
@@ -23,6 +31,10 @@ const state = {
   inFlight: false,
   dismissed: false,
 };
+
+function pickThinking() {
+  return THINKING_LINES[Math.floor(Math.random() * THINKING_LINES.length)];
+}
 
 function fingerprint(ctx) {
   if (!ctx) return "";
@@ -49,6 +61,7 @@ function hidePanel() {
 function setSpinner(on) {
   $spinner.classList.toggle("hidden", !on);
   $content.classList.toggle("dim", on);
+  $catWrapper.classList.toggle("thinking", on);
 }
 
 function setMode(mode, titleText) {
@@ -84,11 +97,11 @@ function renderPdf() {
 function renderForMode() {
   if (state.mode === "email") renderEmail();
   else if (state.mode === "pdf") renderPdf();
-  else $content.textContent = "the cat is watching.";
 }
 
 async function handleEmail(ctx) {
   setMode("email", ctx.mail.subject || "(no subject)");
+  $content.textContent = pickThinking();
   setSpinner(true);
   try {
     const r = await cat.analyzeEmail(ctx.mail);
@@ -99,7 +112,9 @@ async function handleEmail(ctx) {
     );
     renderEmail();
   } catch (e) {
-    $content.textContent = "the cat couldn't read that one. " + (e.message || "");
+    console.error("[cat] email analyze failed:", e);
+    $content.textContent =
+      "the cat couldn't read that one. " + (e.message || "");
   } finally {
     setSpinner(false);
   }
@@ -107,6 +122,7 @@ async function handleEmail(ctx) {
 
 async function handlePdf(ctx) {
   setMode("pdf", ctx.title || ctx.appName);
+  $content.textContent = pickThinking();
   setSpinner(true);
   try {
     const b64 = await cat.capturePrimary();
@@ -114,7 +130,9 @@ async function handlePdf(ctx) {
     state.pdfResult = summary;
     renderPdf();
   } catch (e) {
-    $content.textContent = "the cat tried to read but slipped. " + (e.message || "");
+    console.error("[cat] pdf summarize failed:", e);
+    $content.textContent =
+      "the cat tried to read but slipped. " + (e.message || "");
   } finally {
     setSpinner(false);
   }
@@ -125,7 +143,8 @@ async function tick(force) {
   let ctx;
   try {
     ctx = await cat.getContext();
-  } catch {
+  } catch (e) {
+    console.warn("[cat] getContext failed:", e);
     return;
   }
   const fp = fingerprint(ctx);
@@ -134,10 +153,7 @@ async function tick(force) {
 
   if (ctx.mode === "idle") {
     setMode("idle", "");
-    if (!state.dismissed) {
-      $content.textContent = "the cat is watching.";
-      showPanel();
-    }
+    hidePanel();
     return;
   }
 
@@ -210,5 +226,26 @@ $copy.addEventListener("click", async () => {
   }
 });
 
+function scheduleBlink() {
+  const next = 2400 + Math.random() * 4600;
+  setTimeout(() => {
+    $eyes.forEach((e) => e.classList.add("blink"));
+    setTimeout(() => {
+      $eyes.forEach((e) => e.classList.remove("blink"));
+      if (Math.random() < 0.18) {
+        setTimeout(() => {
+          $eyes.forEach((e) => e.classList.add("blink"));
+          setTimeout(
+            () => $eyes.forEach((e) => e.classList.remove("blink")),
+            120
+          );
+        }, 180);
+      }
+      scheduleBlink();
+    }, 130);
+  }, next);
+}
+
+scheduleBlink();
 setInterval(() => tick(false), POLL_MS);
 tick(true);
