@@ -29,10 +29,45 @@
           <button id="copy-btn">Copy</button>
         </div>
       </div>
+
+      <div id="bubble" class="hidden"></div>
+
+      <div id="settings-overlay" class="hidden">
+        <div class="settings-head">
+          <span>cat settings</span>
+          <button id="settings-close" title="close">×</button>
+        </div>
+        <label class="settings-row">
+          <input type="checkbox" id="voice-toggle" />
+          <span>voice</span>
+        </label>
+        <label class="settings-row">
+          <span>voice profile</span>
+          <select id="voice-profile">
+            <option value="soft">soft (Rachel)</option>
+            <option value="curious">curious (Domi)</option>
+            <option value="bright">bright (Elli)</option>
+            <option value="low">low (Bella)</option>
+            <option value="whisper">whisper (Charlotte)</option>
+          </select>
+        </label>
+        <label class="settings-row">
+          <input type="checkbox" id="auto-voice" />
+          <span>match voice to work type</span>
+        </label>
+        <div id="voice-status"></div>
+      </div>
+
       <div id="cat-wrapper" title="drag · click to refresh">
+        <button id="settings-btn" title="settings">⚙</button>
         <div id="cat-stack">
-          <img id="cat-awake" class="cat-sprite" src="./assets/cat_awake.png" alt="Small black cat" draggable="false" />
-          <img id="cat-puddle" class="cat-sprite active" src="./assets/cat_puddle.png" alt="" draggable="false" />
+          <img id="s-puddle"  class="cat-sprite active" src="./assets/cat_puddle.png"   alt="cat" draggable="false" />
+          <img id="s-awake"   class="cat-sprite"        src="./assets/cat_awake.png"    alt=""    draggable="false" />
+          <img id="s-sleep"   class="cat-sprite"        src="./assets/cat_sleep.png"    alt=""    draggable="false" />
+          <img id="s-walk1"   class="cat-sprite"        src="./assets/cat_walk1.png"    alt=""    draggable="false" />
+          <img id="s-walk2"   class="cat-sprite"        src="./assets/cat_walk2.png"    alt=""    draggable="false" />
+          <img id="s-annoyed" class="cat-sprite"        src="./assets/cat_annoyed.png"  alt=""    draggable="false" />
+          <img id="s-play"    class="cat-sprite"        src="./assets/cat_ball_play.png" alt=""   draggable="false" />
         </div>
       </div>
     </div>
