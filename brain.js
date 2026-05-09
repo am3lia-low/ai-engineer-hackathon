@@ -1,44 +1,123 @@
 const fs = require("fs/promises");
 const path = require("path");
 
-const TEXT_MODEL = "gemini-2.5-flash";
-const VISION_MODEL = "gemini-2.5-flash";
+const TEXT_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o-mini";
+const VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+const OPENAI_BASE = "https://api.openai.com/v1";
 
-let genAI = null;
-function client() {
-  if (genAI) return genAI;
-  if (!process.env.GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY");
-  const { GoogleGenerativeAI } = require("@google/generative-ai");
-  genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  return genAI;
+// Shared quota/backoff state. Any 429 freezes upstream calls for a while
+// so we don't keep burning the daily quota.
+let quotaBlockedUntil = 0;
+function isQuotaBlocked() {
+  return Date.now() < quotaBlockedUntil;
+}
+function noteRateLimit(err) {
+  const msg = (err && err.message) || "";
+  if (msg.includes("429") || /quota/i.test(msg) || /rate.?limit/i.test(msg)) {
+    quotaBlockedUntil = Date.now() + 60 * 60 * 1000;
+    console.warn("[brain] rate-limit hit — backing off OpenAI for 60 min");
+    return true;
+  }
+  return false;
+}
+
+let openaiKeyMissingLogged = false;
+function requireKey() {
+  if (!process.env.OPENAI_API_KEY) {
+    if (!openaiKeyMissingLogged) {
+      console.warn("[brain] OPENAI_API_KEY is not set — text + vision calls will be no-ops.");
+      openaiKeyMissingLogged = true;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Single OpenAI chat-completions wrapper.
+ * - `system` (string|null): system prompt
+ * - `user`   (string): user message text
+ * - `imageBase64` (string|null): if present, sent as a vision attachment
+ * - `jsonMode` (bool): when true, asks for JSON object output
+ * - `maxTokens` (number): cap output
+ */
+async function openaiChat({ system, user, imageBase64, jsonMode, maxTokens = 400 }) {
+  if (!requireKey()) return "";
+  if (isQuotaBlocked()) return "";
+
+  const messages = [];
+  if (system) messages.push({ role: "system", content: system });
+
+  if (imageBase64) {
+    messages.push({
+      role: "user",
+      content: [
+        { type: "text", text: user || "" },
+        {
+          type: "image_url",
+          image_url: { url: `data:image/png;base64,${imageBase64}` },
+        },
+      ],
+    });
+  } else {
+    messages.push({ role: "user", content: user || "" });
+  }
+
+  const body = {
+    model: imageBase64 ? VISION_MODEL : TEXT_MODEL,
+    messages,
+    max_tokens: maxTokens,
+    temperature: 0.8,
+  };
+  if (jsonMode) body.response_format = { type: "json_object" };
+
+  let res;
+  try {
+    res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    console.warn("[brain] openai network error:", e.message);
+    return "";
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    if (res.status === 429) {
+      noteRateLimit({ message: `429 ${errText}` });
+    } else {
+      console.warn("[brain] openai", res.status, errText.slice(0, 160));
+    }
+    return "";
+  }
+
+  const json = await res.json().catch(() => null);
+  return json?.choices?.[0]?.message?.content?.trim() || "";
 }
 
 async function describeScreen(imageBuffer) {
-  try {
-    if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
-      throw new Error("Invalid imageBuffer");
-    }
-    const model = client().getGenerativeModel({ model: VISION_MODEL });
-    const prompt =
+  if (isQuotaBlocked()) return "no observation";
+  if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) return "no observation";
+
+  const text = await openaiChat({
+    system:
       "Describe what's on this screen in one short sentence. " +
       "Focus on the activity, not specific text content. " +
-      "Don't mention specific names, emails, or sensitive information.";
-    const result = await model.generateContent([
-      { text: prompt },
-      {
-        inlineData: {
-          mimeType: "image/png",
-          data: imageBuffer.toString("base64"),
-        },
-      },
-    ]);
-    return (result?.response?.text?.()?.trim() || "no observation");
-  } catch (_e) {
-    return "no observation";
-  }
+      "Don't mention specific names, emails, or sensitive information.",
+    user: "Describe this screen.",
+    imageBase64: imageBuffer.toString("base64"),
+    maxTokens: 80,
+  });
+  return text || "no observation";
 }
 
 async function getCatResponse(description, memory) {
+  if (isQuotaBlocked()) return { response: "", tag: "" };
   const safe = memory && typeof memory === "object" ? memory : {};
   const obs = Array.isArray(safe.observations) ? safe.observations : [];
   const sessionCount = typeof safe.session_count === "number" ? safe.session_count : 0;
@@ -65,25 +144,22 @@ async function getCatResponse(description, memory) {
     instruction: "Return ONLY valid JSON with keys: response, tag.",
   };
 
+  const raw = await openaiChat({
+    system: systemPrompt,
+    user: JSON.stringify(userContext),
+    jsonMode: true,
+    maxTokens: 200,
+  });
+
+  if (!raw) return { response: "", tag: "" };
   try {
-    const model = client().getGenerativeModel({
-      model: TEXT_MODEL,
-      systemInstruction: systemPrompt,
-    });
-    const result = await model.generateContent(JSON.stringify(userContext));
-    const raw = result?.response?.text?.()?.trim() || "";
-    const cleaned = raw.replace(/^```(?:json)?\s*|\s*```$/g, "");
-    try {
-      const parsed = JSON.parse(cleaned);
-      return {
-        response: typeof parsed?.response === "string" ? parsed.response : "",
-        tag: typeof parsed?.tag === "string" ? parsed.tag : "",
-      };
-    } catch {
-      return { response: raw, tag: "" };
-    }
+    const parsed = JSON.parse(raw);
+    return {
+      response: typeof parsed?.response === "string" ? parsed.response : "",
+      tag: typeof parsed?.tag === "string" ? parsed.tag : "",
+    };
   } catch {
-    return { response: "", tag: "" };
+    return { response: raw, tag: "" };
   }
 }
 
@@ -112,37 +188,166 @@ You will be given subject, sender, and body. Return STRICT JSON with three keys:
 JSON only. No markdown fences. No commentary.`;
 
 async function summarizePdfImage(base64Image) {
-  const model = client().getGenerativeModel({ model: VISION_MODEL });
-  const res = await model.generateContent([
-    { text: PDF_PROMPT },
-    { inlineData: { data: base64Image, mimeType: "image/png" } },
-  ]);
-  return (res?.response?.text?.() || "").trim();
+  if (isQuotaBlocked()) {
+    throw new Error("LLM quota exhausted — try again later or upgrade.");
+  }
+  const text = await openaiChat({
+    system: PDF_PROMPT,
+    user: "Summarize this page.",
+    imageBase64: base64Image,
+    maxTokens: 250,
+  });
+  return text || "";
 }
 
 async function analyzeEmail({ subject, sender, body }) {
-  const model = client().getGenerativeModel({
-    model: TEXT_MODEL,
-    generationConfig: { responseMimeType: "application/json" },
-  });
+  if (isQuotaBlocked()) {
+    throw new Error("LLM quota exhausted — try again later or upgrade.");
+  }
   const userMsg = `Subject: ${subject}\nFrom: ${sender}\n\n${body}`;
-  const res = await model.generateContent([
-    { text: EMAIL_PROMPT },
-    { text: userMsg },
-  ]);
-  let text = (res?.response?.text?.() || "").trim();
-  text = text.replace(/^```(?:json)?\s*|\s*```$/g, "");
+  const raw = await openaiChat({
+    system: EMAIL_PROMPT,
+    user: userMsg,
+    jsonMode: true,
+    maxTokens: 400,
+  });
+  if (!raw) return { summary: "", draftReply: "", clarifyingQuestion: "" };
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(raw);
     return {
       summary: parsed.summary || "",
       draftReply: parsed.draftReply || "",
       clarifyingQuestion: parsed.clarifyingQuestion || "",
     };
   } catch {
-    return { summary: text, draftReply: "", clarifyingQuestion: "" };
+    return { summary: raw, draftReply: "", clarifyingQuestion: "" };
   }
 }
+
+const USER_REPLY_PROMPT = `You are a small, warm black cat. The person just spoke to you out loud — you heard them.
+
+Reply in 1-2 short sentences. Lowercase. Plain. Slightly oblique like a cat would be — but actually answer if they asked.
+
+Rules:
+- Stay in character. Never say "I'm an AI" or break the spell.
+- Don't be sycophantic. Don't say "great question".
+- If they ask a real question (about what's on their screen, the time, themselves), answer briefly.
+- If they greet you, greet back briefly.
+- If they tell you something personal, acknowledge it warmly.
+- Under 25 words.
+
+Return only the reply. Nothing else.`;
+
+async function replyToUser(userText) {
+  if (isQuotaBlocked()) return "mm. ask again in a bit.";
+  if (!userText || !userText.trim()) return "";
+  const text = await openaiChat({
+    system: USER_REPLY_PROMPT,
+    user: userText.slice(0, 2000),
+    maxTokens: 120,
+  });
+  return (text || "").replace(/^["']|["']$/g, "");
+}
+
+const MOUSE_QUESTION_PROMPT = `You are a small, curious black cat. The image shows a small region of the screen near where the user is currently hovering with their cursor.
+
+Ask one short, casual question about what's there — the kind of thing a cat would notice and wonder about. Like a tiny whisper at the user's shoulder.
+
+Rules:
+- Lowercase. Plain language. Under 12 words.
+- One question only. End with "?".
+- No quotes. No emoji. No "you" — just the question itself.
+- If the region is empty, blank, or just wallpaper, return an empty string.
+- Don't say "this" or "that" — refer to what you actually see (a word, an icon, a color, a number).
+
+Return only the question (or empty string). Nothing else.`;
+
+async function askMouseQuestion(imageBuffer) {
+  if (isQuotaBlocked()) return "";
+  if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) return "";
+  const text = await openaiChat({
+    system: MOUSE_QUESTION_PROMPT,
+    user: "Look at this region near the cursor and ask a short question.",
+    imageBase64: imageBuffer.toString("base64"),
+    maxTokens: 60,
+  });
+  return (text || "").replace(/^["']|["']$/g, "");
+}
+
+const PROACTIVE_PROMPT = `You are a small, warm black cat who lives on the user's desktop. You can see what's on their screen right now.
+
+Look at the screen and write ONE short message (1-2 sentences, lowercase, plain) that does ONE of these:
+
+- Names what they're doing specifically — "i see you're studying for the data structures exam"
+- Then offers something kind — "want a five-minute rest, or shall i quiz you?"
+- Or a useful nudge — "want me to summarize that paper?", "want help drafting a reply?"
+- If they look stuck — "this one's stubborn. want a fresh pair of eyes?"
+- If they look tired — "you've been at this a while. tea?"
+
+Tone: warm, lowercase, friendly, curious, like a small friend leaning in. Don't say "I'm an AI". Don't preface. Don't be sycophantic. Don't greet by name.
+
+If the screen is too empty / generic / private to say anything specific, return empty string.
+
+Return only the message text. No quotes. Under 25 words.`;
+
+async function proactiveAssist(imageBuffer) {
+  if (isQuotaBlocked()) return "";
+  if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) return "";
+  const text = await openaiChat({
+    system: PROACTIVE_PROMPT,
+    user: "Look at the user's screen and offer one short, helpful question or nudge.",
+    imageBase64: imageBuffer.toString("base64"),
+    maxTokens: 120,
+  });
+  return (text || "").replace(/^["']|["']$/g, "");
+}
+
+/**
+ * Transcribe audio bytes via OpenAI Whisper.
+ * `audioBuffer` should be a Node Buffer of webm/opus or mp4/aac audio.
+ */
+async function transcribeAudio(audioBuffer, mimeType = "audio/webm") {
+  if (!requireKey()) return { ok: false, reason: "no-api-key" };
+  if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
+    return { ok: false, reason: "empty-audio" };
+  }
+
+  const ext = mimeType.includes("webm") ? "webm" : mimeType.includes("mp4") ? "m4a" : "wav";
+  const filename = `cat-utterance.${ext}`;
+
+  const form = new FormData();
+  form.append("file", new Blob([audioBuffer], { type: mimeType }), filename);
+  form.append("model", "whisper-1");
+  form.append("language", "en");
+  form.append("temperature", "0");
+
+  let res;
+  try {
+    res = await fetch(`${OPENAI_BASE}/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: form,
+    });
+  } catch (e) {
+    return { ok: false, reason: "network-error", detail: e.message };
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    if (res.status === 429) noteRateLimit({ message: `429 ${errText}` });
+    return { ok: false, reason: "api-error", status: res.status, detail: errText.slice(0, 160) };
+  }
+  const json = await res.json().catch(() => null);
+  return { ok: true, text: (json?.text || "").trim() };
+}
+
+const VOICE_BY_MODE = {
+  pdf: "low",
+  email: "soft",
+  curious: "curious",
+  auto: "soft",
+  play: "bright",
+};
 
 const VOICE_LIBRARY = {
   soft: "21m00Tcm4TlvDq8ikWAM",
@@ -156,8 +361,7 @@ function pickVoiceProfile({ mode, hour, defaultProfile, autoByContext }) {
   const fallback = defaultProfile && VOICE_LIBRARY[defaultProfile] ? defaultProfile : "soft";
   if (!autoByContext) return fallback;
   if (typeof hour === "number" && (hour >= 22 || hour < 6)) return "whisper";
-  if (mode === "pdf") return "low";
-  if (mode === "email") return "soft";
+  if (mode && VOICE_BY_MODE[mode]) return VOICE_BY_MODE[mode];
   return fallback;
 }
 
@@ -166,6 +370,10 @@ module.exports = {
   getCatResponse,
   summarizePdfImage,
   analyzeEmail,
+  askMouseQuestion,
+  proactiveAssist,
+  replyToUser,
+  transcribeAudio,
   pickVoiceProfile,
   VOICE_LIBRARY,
 };

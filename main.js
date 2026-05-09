@@ -5,7 +5,6 @@ const {
   BrowserWindow,
   ipcMain,
   screen,
-  desktopCapturer,
 } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
@@ -22,9 +21,10 @@ const MEMORY_PATH = path.join(__dirname, "memory.json");
 const SETTINGS_PATH = path.join(__dirname, "settings.json");
 
 const DEFAULT_SETTINGS = {
-  voiceEnabled: false,
+  voiceEnabled: true,
   voiceProfile: "soft",
   autoVoiceByContext: true,
+  mouseQuestionsEnabled: true,
 };
 
 let mainWindow;
@@ -52,11 +52,99 @@ function createWindow() {
   mainWindow.loadFile("index.html");
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  startMouseDwellWatcher();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+/* ---------- mouse-dwell question loop ---------- */
+const MOUSE_POLL_MS = 600;
+const DWELL_TRIGGER_MS = 2500;
+const QUESTION_COOLDOWN_MS = 25000;
+const MIN_MOVE_FROM_LAST_Q = 200;
+const REGION_W = 480;
+const REGION_H = 320;
+
+let mouseLast = null;
+let dwellStartedAt = 0;
+let lastQuestionAt = 0;
+let lastQuestionAt_pos = null;
+let mouseQuestionInFlight = false;
+
+function dist(a, b) {
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+function startMouseDwellWatcher() {
+  setInterval(async () => {
+    if (!mainWindow || mouseQuestionInFlight) return;
+
+    const settings = await readSettings();
+    if (!settings.mouseQuestionsEnabled) return;
+
+    const now = Date.now();
+    const cursor = screen.getCursorScreenPoint();
+    if (!mouseLast) {
+      mouseLast = cursor;
+      dwellStartedAt = now;
+      return;
+    }
+
+    if (dist(cursor, mouseLast) > 4) {
+      mouseLast = cursor;
+      dwellStartedAt = now;
+      return;
+    }
+
+    const dwell = now - dwellStartedAt;
+    const sinceQ = now - lastQuestionAt;
+    const movedFromLastQ = lastQuestionAt_pos
+      ? dist(cursor, lastQuestionAt_pos)
+      : Infinity;
+
+    if (
+      dwell > DWELL_TRIGGER_MS &&
+      sinceQ > QUESTION_COOLDOWN_MS &&
+      movedFromLastQ > MIN_MOVE_FROM_LAST_Q
+    ) {
+      lastQuestionAt = now;
+      lastQuestionAt_pos = { x: cursor.x, y: cursor.y };
+      mouseQuestionInFlight = true;
+      askMouseQuestion(cursor)
+        .catch((e) => console.warn("[cat] mouse question failed:", e.message))
+        .finally(() => {
+          mouseQuestionInFlight = false;
+        });
+    }
+  }, MOUSE_POLL_MS);
+}
+
+async function askMouseQuestion(cursor) {
+  const x = Math.max(0, Math.round(cursor.x - REGION_W / 2));
+  const y = Math.max(0, Math.round(cursor.y - REGION_H / 2));
+  const tmp = path.join(os.tmpdir(), `cat-region-${Date.now()}.png`);
+  try {
+    await execFileP("screencapture", [
+      "-x",
+      "-t",
+      "png",
+      "-R",
+      `${x},${y},${REGION_W},${REGION_H}`,
+      tmp,
+    ]);
+    const buf = await fs.readFile(tmp);
+    const question = await brain.askMouseQuestion(buf);
+    if (question && question.trim() && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("cat:mouseQuestion", question.trim());
+    }
+  } finally {
+    fs.unlink(tmp).catch(() => {});
+  }
+}
 
 ipcMain.on("drag-window", (_e, delta) => {
   if (!mainWindow || !delta) return;
@@ -65,14 +153,19 @@ ipcMain.on("drag-window", (_e, delta) => {
 });
 
 ipcMain.handle("capture-screen", async () => {
-  const { width, height } = screen.getPrimaryDisplay().size;
-  const sources = await desktopCapturer.getSources({
-    types: ["screen"],
-    thumbnailSize: { width, height },
-  });
-  const source = sources[0];
-  if (!source) return null;
-  return source.thumbnail.toPNG();
+  // `desktopCapturer.getSources` is unreliable on macOS Sequoia without TCC
+  // approval; the `screencapture` CLI works as long as Terminal/Electron has
+  // Screen Recording permission — same path used by cat:capturePrimary.
+  const tmp = path.join(os.tmpdir(), `cat-cap-${Date.now()}.png`);
+  try {
+    await execFileP("screencapture", ["-x", "-t", "png", tmp]);
+    return await fs.readFile(tmp);
+  } catch (e) {
+    console.error("[cat] capture-screen failed:", e.message);
+    return null;
+  } finally {
+    fs.unlink(tmp).catch(() => {});
+  }
 });
 
 ipcMain.handle("describe-screen", async (_e, imageBuffer) => {
@@ -250,8 +343,15 @@ ipcMain.handle("cat:speak", async (_e, { text, profile, mode }) => {
     );
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      console.error("[cat] elevenlabs failed:", res.status, errText.slice(0, 120));
-      return { ok: false, reason: "api-error", status: res.status };
+      let detail = "";
+      try {
+        const j = JSON.parse(errText);
+        detail = j?.detail?.status || j?.detail?.message || j?.message || "";
+      } catch {
+        detail = errText.slice(0, 120);
+      }
+      console.error("[cat] elevenlabs failed:", res.status, detail);
+      return { ok: false, reason: "api-error", status: res.status, detail };
     }
     const buf = Buffer.from(await res.arrayBuffer());
     return { ok: true, audio: buf.toString("base64"), profile: chosenProfile };
@@ -282,6 +382,43 @@ ipcMain.handle("cat:setSettings", async (_e, partial) => {
 ipcMain.handle("cat:hasVoiceKey", async () =>
   Boolean(process.env.ELEVENLABS_API_KEY)
 );
+
+ipcMain.handle("cat:replyToUser", async (_e, userText) => {
+  try {
+    return await brain.replyToUser(userText);
+  } catch (e) {
+    console.error("[cat] replyToUser failed:", e.message);
+    return "";
+  }
+});
+
+ipcMain.handle("cat:transcribe", async (_e, audio, mimeType) => {
+  try {
+    const buf = Buffer.isBuffer(audio) ? audio : Buffer.from(audio || []);
+    return await brain.transcribeAudio(buf, mimeType || "audio/webm");
+  } catch (e) {
+    console.error("[cat] transcribe failed:", e.message);
+    return { ok: false, reason: "exception", detail: e.message };
+  }
+});
+
+ipcMain.handle("cat:hasTranscriptionKey", async () =>
+  Boolean(process.env.OPENAI_API_KEY)
+);
+
+ipcMain.handle("cat:proactiveAssist", async () => {
+  const tmp = path.join(os.tmpdir(), `cat-proactive-${Date.now()}.png`);
+  try {
+    await execFileP("screencapture", ["-x", "-t", "png", tmp]);
+    const buf = await fs.readFile(tmp);
+    return await brain.proactiveAssist(buf);
+  } catch (e) {
+    console.error("[cat] proactiveAssist failed:", e.message);
+    return "";
+  } finally {
+    fs.unlink(tmp).catch(() => {});
+  }
+});
 
 if (!fsSync.existsSync(SETTINGS_PATH)) {
   fsSync.writeFileSync(

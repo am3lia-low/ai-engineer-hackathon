@@ -18,7 +18,15 @@ contextBridge.exposeInMainWorld("desktopCat", {
 
   speak: (payload) => ipcRenderer.invoke("cat:speak", payload),
   hasVoiceKey: () => ipcRenderer.invoke("cat:hasVoiceKey"),
+  hasTranscriptionKey: () => ipcRenderer.invoke("cat:hasTranscriptionKey"),
+  replyToUser: (text) => ipcRenderer.invoke("cat:replyToUser", text),
+  transcribe: (audio, mimeType) =>
+    ipcRenderer.invoke("cat:transcribe", audio, mimeType),
+  proactiveAssist: () => ipcRenderer.invoke("cat:proactiveAssist"),
 
   getSettings: () => ipcRenderer.invoke("cat:getSettings"),
   setSettings: (partial) => ipcRenderer.invoke("cat:setSettings", partial),
+
+  onMouseQuestion: (cb) =>
+    ipcRenderer.on("cat:mouseQuestion", (_e, q) => cb(q)),
 });
