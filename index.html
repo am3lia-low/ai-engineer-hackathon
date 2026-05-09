@@ -30,14 +30,10 @@
         </div>
       </div>
       <div id="cat-wrapper" title="drag · click to refresh">
-        <svg id="cat" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" aria-label="Small black cat">
-          <polygon class="ear ear-left" points="115,120 152,88 165,145" fill="#161616" />
-          <polygon class="ear ear-right" points="285,120 248,88 235,145" fill="#161616" />
-          <ellipse class="body" cx="200" cy="225" rx="112" ry="115" fill="#161616" />
-          <ellipse class="eye eye-left" cx="164" cy="212" rx="8" ry="8" fill="#f5cc57" />
-          <ellipse class="eye eye-right" cx="236" cy="212" rx="8" ry="8" fill="#f5cc57" />
-          <path class="tail" d="M285 280 C335 275 335 335 278 328" stroke="#161616" stroke-width="14" fill="none" stroke-linecap="round" />
-        </svg>
+        <div id="cat-stack">
+          <img id="cat-awake" class="cat-sprite" src="./assets/cat_awake.png" alt="Small black cat" draggable="false" />
+          <img id="cat-puddle" class="cat-sprite active" src="./assets/cat_puddle.png" alt="" draggable="false" />
+        </div>
       </div>
     </div>
     <script src="./renderer.js"></script>

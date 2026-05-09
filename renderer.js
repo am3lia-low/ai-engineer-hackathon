@@ -11,9 +11,12 @@ const $content = document.getElementById("panel-content");
 const $actions = document.getElementById("panel-actions");
 const $copy = document.getElementById("copy-btn");
 const $catWrapper = document.getElementById("cat-wrapper");
-const $eyes = document.querySelectorAll("#cat .eye");
+const $catStack = document.getElementById("cat-stack");
+const $awake = document.getElementById("cat-awake");
+const $puddle = document.getElementById("cat-puddle");
 
 const POLL_MS = 4000;
+const SLEEP_AFTER_MS = 22000;
 const THINKING_LINES = [
   "...let me peek",
   "...one moment",
@@ -30,6 +33,8 @@ const state = {
   activeTab: "summary",
   inFlight: false,
   dismissed: false,
+  sprite: "puddle",
+  lastActiveAt: 0,
 };
 
 function pickThinking() {
@@ -45,6 +50,48 @@ function fingerprint(ctx) {
     return `pdf:${ctx.appName}|${ctx.title}`;
   }
   return "idle";
+}
+
+function setSprite(name) {
+  if (state.sprite === name) return;
+  state.sprite = name;
+  if (name === "awake") {
+    $awake.classList.add("active");
+    $puddle.classList.remove("active");
+  } else {
+    $puddle.classList.add("active");
+    $awake.classList.remove("active");
+  }
+}
+
+function pokeAwake() {
+  state.lastActiveAt = Date.now();
+  setSprite("awake");
+}
+
+function playOnce(cls) {
+  $catStack.classList.remove(cls);
+  void $catStack.offsetWidth;
+  $catStack.classList.add(cls);
+  setTimeout(() => $catStack.classList.remove(cls), 1000);
+}
+
+function perk() {
+  playOnce("perk");
+}
+
+function tiltSometimes() {
+  if (state.sprite !== "awake") return;
+  if (Math.random() < 0.5) playOnce("tilt-left");
+  else playOnce("tilt-right");
+}
+
+function maybeSleep() {
+  if (state.sprite !== "awake") return;
+  const panelHidden = $panel.classList.contains("hidden");
+  if (panelHidden && Date.now() - state.lastActiveAt > SLEEP_AFTER_MS) {
+    setSprite("puddle");
+  }
 }
 
 function showPanel() {
@@ -101,6 +148,7 @@ function renderForMode() {
 
 async function handleEmail(ctx) {
   setMode("email", ctx.mail.subject || "(no subject)");
+  pokeAwake();
   $content.textContent = pickThinking();
   setSpinner(true);
   try {
@@ -111,6 +159,7 @@ async function handleEmail(ctx) {
       b.classList.toggle("active", b.dataset.tab === "summary")
     );
     renderEmail();
+    perk();
   } catch (e) {
     console.error("[cat] email analyze failed:", e);
     $content.textContent =
@@ -122,6 +171,7 @@ async function handleEmail(ctx) {
 
 async function handlePdf(ctx) {
   setMode("pdf", ctx.title || ctx.appName);
+  pokeAwake();
   $content.textContent = pickThinking();
   setSpinner(true);
   try {
@@ -129,6 +179,7 @@ async function handlePdf(ctx) {
     const summary = await cat.summarizePdf(b64);
     state.pdfResult = summary;
     renderPdf();
+    perk();
   } catch (e) {
     console.error("[cat] pdf summarize failed:", e);
     $content.textContent =
@@ -180,7 +231,11 @@ $catWrapper.addEventListener("mousedown", (e) => {
 window.addEventListener("mouseup", () => {
   const wasClick = lastMouse && !dragMoved;
   lastMouse = null;
-  if (wasClick) tick(true);
+  if (wasClick) {
+    pokeAwake();
+    perk();
+    tick(true);
+  }
 });
 
 window.addEventListener("mousemove", (e) => {
@@ -226,26 +281,7 @@ $copy.addEventListener("click", async () => {
   }
 });
 
-function scheduleBlink() {
-  const next = 2400 + Math.random() * 4600;
-  setTimeout(() => {
-    $eyes.forEach((e) => e.classList.add("blink"));
-    setTimeout(() => {
-      $eyes.forEach((e) => e.classList.remove("blink"));
-      if (Math.random() < 0.18) {
-        setTimeout(() => {
-          $eyes.forEach((e) => e.classList.add("blink"));
-          setTimeout(
-            () => $eyes.forEach((e) => e.classList.remove("blink")),
-            120
-          );
-        }, 180);
-      }
-      scheduleBlink();
-    }, 130);
-  }, next);
-}
-
-scheduleBlink();
+setInterval(tiltSometimes, 7000 + Math.random() * 4000);
+setInterval(maybeSleep, 4000);
 setInterval(() => tick(false), POLL_MS);
 tick(true);
