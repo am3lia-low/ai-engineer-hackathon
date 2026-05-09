@@ -21,6 +21,8 @@ body {
   height: 100%;
 }
 
+/* ---------- cat sprite stack ---------- */
+
 #cat-wrapper {
   position: absolute;
   right: 8px;
@@ -43,6 +45,10 @@ body {
   animation: breathe-fast 1.4s ease-in-out infinite;
 }
 
+#cat-wrapper.shake {
+  animation: shake 360ms ease-in-out;
+}
+
 #cat-stack {
   position: relative;
   width: 100%;
@@ -62,6 +68,10 @@ body {
   animation: tilt-right 900ms ease-in-out;
 }
 
+#cat-stack.bounce {
+  animation: play-bounce 1.2s ease-in-out infinite;
+}
+
 .cat-sprite {
   position: absolute;
   inset: 0;
@@ -71,22 +81,111 @@ body {
   pointer-events: none;
   filter: drop-shadow(0 12px 20px rgba(0, 0, 0, 0.38));
   opacity: 0;
-  transition: opacity 360ms ease;
+  transition: opacity 240ms ease;
 }
 
 .cat-sprite.active {
   opacity: 1;
 }
 
-#cat-awake.active {
+/* per-sprite ambient motion */
+#s-awake.active {
   animation: idle-sway 9s ease-in-out infinite;
   transform-origin: 50% 80%;
 }
 
-#cat-puddle.active {
+#s-puddle.active {
   animation: puddle-breath 5.5s ease-in-out infinite;
   transform-origin: 50% 100%;
 }
+
+#s-sleep.active {
+  animation: sleep-breath 6.5s ease-in-out infinite;
+  transform-origin: 50% 100%;
+}
+
+#s-play.active {
+  animation: play-wiggle 1.4s ease-in-out infinite;
+  transform-origin: 50% 90%;
+}
+
+#s-annoyed.active {
+  animation: annoyed-twitch 1.8s ease-in-out infinite;
+  transform-origin: 50% 80%;
+}
+
+/* ---------- settings cog button ---------- */
+
+#settings-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(244, 240, 232, 0.7);
+  font-size: 13px;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 200ms ease, background 160ms ease;
+  z-index: 10;
+}
+
+#cat-wrapper:hover #settings-btn {
+  opacity: 1;
+}
+
+#settings-btn:hover {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+/* ---------- speech bubble (autonomous) ---------- */
+
+#bubble {
+  position: absolute;
+  right: 24px;
+  bottom: 232px;
+  max-width: 220px;
+  padding: 10px 13px;
+  border-radius: 14px;
+  background: rgba(255, 248, 228, 0.96);
+  color: #1e1e1e;
+  font-size: 13px;
+  line-height: 1.35;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 260ms ease, transform 260ms ease;
+}
+
+#bubble.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+#bubble::after {
+  content: "";
+  position: absolute;
+  right: 18px;
+  bottom: -8px;
+  width: 14px;
+  height: 14px;
+  background: rgba(255, 248, 228, 0.96);
+  transform: rotate(45deg);
+}
+
+#bubble.speaking {
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.32),
+    0 0 0 2px rgba(246, 220, 138, 0.6);
+}
+
+/* ---------- active panel (pdf/email) ---------- */
 
 #panel {
   position: absolute;
@@ -255,101 +354,192 @@ body {
   transform: translateY(1px);
 }
 
+/* ---------- settings overlay ---------- */
+
+#settings-overlay {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 256px;
+  transform: translate(-50%, -50%);
+  padding: 14px 14px 12px;
+  border-radius: 14px;
+  background: rgba(28, 28, 32, 0.94);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+  font-size: 12.5px;
+  z-index: 20;
+}
+
+#settings-overlay .settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #f6dc8a;
+}
+
+#settings-close {
+  background: transparent;
+  border: 0;
+  color: rgba(244, 240, 232, 0.5);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+#settings-close:hover {
+  color: #fff;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  color: rgba(244, 240, 232, 0.85);
+}
+
+.settings-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  position: relative;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.settings-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f4f0e8;
+  transition: left 160ms ease;
+}
+
+.settings-row input[type="checkbox"]:checked {
+  background: #f6dc8a;
+}
+
+.settings-row input[type="checkbox"]:checked::before {
+  left: 14px;
+  background: #1c1c20;
+}
+
+.settings-row select {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f0e8;
+  cursor: pointer;
+}
+
+#voice-status {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(244, 240, 232, 0.5);
+}
+
+#voice-status.warn {
+  color: #ffb380;
+}
+
+/* ---------- utilities ---------- */
+
 .hidden {
   display: none !important;
 }
 
+/* ---------- keyframes ---------- */
+
 @keyframes breathe {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.04);
-  }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
 }
 
 @keyframes breathe-fast {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.06);
-  }
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
 }
 
 @keyframes perk {
-  0% {
-    transform: translateY(0) scale(1);
-  }
-  22% {
-    transform: translateY(-14px) scale(1.06);
-  }
-  55% {
-    transform: translateY(0) scale(1);
-  }
-  78% {
-    transform: translateY(-4px) scale(1.02);
-  }
-  100% {
-    transform: translateY(0) scale(1);
-  }
+  0% { transform: translateY(0) scale(1); }
+  22% { transform: translateY(-14px) scale(1.06); }
+  55% { transform: translateY(0) scale(1); }
+  78% { transform: translateY(-4px) scale(1.02); }
+  100% { transform: translateY(0) scale(1); }
 }
 
 @keyframes tilt-left {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  40%,
-  60% {
-    transform: rotate(-7deg);
-  }
+  0%, 100% { transform: rotate(0deg); }
+  40%, 60% { transform: rotate(-7deg); }
 }
 
 @keyframes tilt-right {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  40%,
-  60% {
-    transform: rotate(6deg);
-  }
+  0%, 100% { transform: rotate(0deg); }
+  40%, 60% { transform: rotate(6deg); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
 }
 
 @keyframes idle-sway {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  25% {
-    transform: rotate(-1.4deg);
-  }
-  75% {
-    transform: rotate(1.4deg);
-  }
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-1.4deg); }
+  75% { transform: rotate(1.4deg); }
 }
 
 @keyframes puddle-breath {
-  0%,
-  100% {
-    transform: scaleY(1);
-  }
-  50% {
-    transform: scaleY(0.96);
-  }
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.96); }
+}
+
+@keyframes sleep-breath {
+  0%, 100% { transform: scaleY(1) translateY(0); }
+  50% { transform: scaleY(0.95) translateY(2px); }
+}
+
+@keyframes play-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes play-wiggle {
+  0%, 100% { transform: rotate(-3deg); }
+  50% { transform: rotate(3deg); }
+}
+
+@keyframes annoyed-twitch {
+  0%, 60%, 100% { transform: translateY(0) rotate(0deg); }
+  72% { transform: translateY(-2px) rotate(-1deg); }
+  86% { transform: translateY(0) rotate(1deg); }
 }
 
 @keyframes bounce {
-  0%,
-  100% {
-    opacity: 0.3;
-    transform: translateY(0);
-  }
-  50% {
-    opacity: 1;
-    transform: translateY(-4px);
-  }
+  0%, 100% { opacity: 0.3; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-4px); }
 }
