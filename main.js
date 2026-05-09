@@ -108,10 +108,18 @@ function classifyMode(appName, title) {
   return "idle";
 }
 
+let lastLoggedMode = null;
+function logMode(mode, appName, title) {
+  if (mode === lastLoggedMode) return;
+  lastLoggedMode = mode;
+  console.log(`[cat] mode=${mode} app=${appName || "?"} title=${(title || "").slice(0, 60)}`);
+}
+
 ipcMain.handle("cat:getContext", async () => {
   const front = await osa(FRONT_APP_SCRIPT);
   const [appName = "", title = ""] = front.split("|||SEP|||");
   const mode = classifyMode(appName, title);
+  logMode(mode, appName, title);
 
   if (mode === "email") {
     const sel = await osa(MAIL_SELECTION_SCRIPT);
@@ -132,16 +140,30 @@ ipcMain.handle("cat:capturePrimary", async () => {
   try {
     await execFileP("screencapture", ["-x", "-t", "png", tmp]);
     const buf = await fs.promises.readFile(tmp);
+    console.log(`[cat] captured ${Math.round(buf.length / 1024)}kb`);
     return buf.toString("base64");
+  } catch (e) {
+    console.error("[cat] capture failed:", e.message);
+    throw e;
   } finally {
     fs.promises.unlink(tmp).catch(() => {});
   }
 });
 
 ipcMain.handle("cat:summarizePdf", async (_e, base64Image) => {
-  return brain.summarizePdfImage(base64Image);
+  try {
+    return await brain.summarizePdfImage(base64Image);
+  } catch (e) {
+    console.error("[cat] summarizePdf failed:", e.message);
+    throw e;
+  }
 });
 
 ipcMain.handle("cat:analyzeEmail", async (_e, mail) => {
-  return brain.analyzeEmail(mail);
+  try {
+    return await brain.analyzeEmail(mail);
+  } catch (e) {
+    console.error("[cat] analyzeEmail failed:", e.message);
+    throw e;
+  }
 });
