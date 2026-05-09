@@ -433,24 +433,35 @@ function fingerprint(ctx) {
   return "idle";
 }
 
+const NO_READ_LINE = "I can't quite focus on this one. let me rest a moment.";
+const NO_MAIL_LINE = "this letter's blurred for me right now. give me a minute.";
+
 async function handleEmail(ctx) {
   setMode("email", ctx.mail.subject || "(no subject)");
   pokeAwake();
   $content.textContent = pickThinking();
   setSpinner(true);
   try {
-    const r = await cat.analyzeEmail(ctx.mail);
+    const r = (await cat.analyzeEmail(ctx.mail)) || {};
     state.emailResult = r;
     state.activeTab = "summary";
     $tabButtons.forEach((b) =>
       b.classList.toggle("active", b.dataset.tab === "summary")
     );
-    renderEmail();
-    perk();
-    if (r.summary) speakAndShow(r.summary, { mode: "email" });
+    const hasAny = (r.summary && r.summary.trim()) ||
+                   (r.draftReply && r.draftReply.trim()) ||
+                   (r.clarifyingQuestion && r.clarifyingQuestion.trim());
+    if (!hasAny) {
+      $content.textContent = NO_MAIL_LINE;
+      flashAnnoyed();
+    } else {
+      renderEmail();
+      perk();
+      if (r.summary) speakAndShow(r.summary, { mode: "email" });
+    }
   } catch (e) {
-    console.error("[cat] email failed:", e);
-    $content.textContent = "the cat couldn't read that one. " + (e.message || "");
+    console.error("[cat] email failed:", e?.message || e);
+    $content.textContent = NO_MAIL_LINE;
     flashAnnoyed();
   } finally {
     setSpinner(false);
@@ -466,12 +477,17 @@ async function handlePdf(ctx) {
     const b64 = await cat.capturePrimary();
     const summary = await cat.summarizePdf(b64);
     state.pdfResult = summary;
-    renderPdf();
-    perk();
-    if (summary) speakAndShow(summary, { mode: "pdf" });
+    if (summary && summary.trim()) {
+      renderPdf();
+      perk();
+      speakAndShow(summary, { mode: "pdf" });
+    } else {
+      $content.textContent = NO_READ_LINE;
+      flashAnnoyed();
+    }
   } catch (e) {
-    console.error("[cat] pdf failed:", e);
-    $content.textContent = "the cat tried to read but slipped. " + (e.message || "");
+    console.error("[cat] pdf failed:", e?.message || e);
+    $content.textContent = NO_READ_LINE;
     flashAnnoyed();
   } finally {
     setSpinner(false);
