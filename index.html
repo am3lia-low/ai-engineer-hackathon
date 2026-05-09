@@ -8,9 +8,29 @@
   </head>
   <body>
     <div id="app">
-      <div id="speech-bubble" class="hidden"></div>
-      <div id="cat-wrapper">
-        <img id="cat" src="./assets/cat_awake.svg" alt="Small black cat mascot" />
+      <div id="panel" class="hidden">
+        <div id="panel-head">
+          <span id="panel-mode" data-mode="idle">watching</span>
+          <span id="panel-title"></span>
+          <button id="panel-close" title="dismiss">×</button>
+        </div>
+        <div id="panel-tabs" class="hidden">
+          <button class="tab active" data-tab="summary">Summary</button>
+          <button class="tab" data-tab="reply">Reply</button>
+          <button class="tab" data-tab="ask">Ask</button>
+        </div>
+        <div id="panel-body">
+          <div id="panel-spinner" class="hidden">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          </div>
+          <div id="panel-content"></div>
+        </div>
+        <div id="panel-actions" class="hidden">
+          <button id="copy-btn">Copy</button>
+        </div>
+      </div>
+      <div id="cat-wrapper" title="drag · click to refresh">
+        <img id="cat" src="./assets/cat_awake.svg" alt="Small black cat mascot" draggable="false" />
       </div>
     </div>
     <script src="./renderer.js"></script>

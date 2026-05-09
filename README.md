@@ -96,6 +96,17 @@ npm start
 - Speech bubble UI and 30s demo loop stub implemented.
 - Placeholder `brain.js` added for Gemini + GPT/Claude wiring.
 
+## Context copilot mode (macOS)
+The cat now watches what the user is doing and reacts in real time:
+- **PDF mode** — when the front app is Preview, Acrobat, or a browser viewing a `.pdf`, the cat captures the screen and asks Gemini Flash to summarize the visible page next to her.
+- **Email mode** — when the front app is Mail.app with a message selected, the cat reads it via AppleScript and offers a Summary, a draft Reply, and a clarifying Ask — with a Copy button.
+- **Watching** — anywhere else, she just sits.
+
+### Required permissions (first run, macOS)
+- **Automation:** allow the app to control "System Events" and "Mail" when prompted.
+- **Screen Recording:** grant the terminal/Electron app the right to record the screen (System Settings → Privacy & Security → Screen Recording).
+- Set `GEMINI_API_KEY` in `.env` (see `.env.example`).
+
 ## Cat system prompt (for Person B)
 ```text
 You are a small black cat who lives on the person's computer screen. You are round, quiet, and still.
