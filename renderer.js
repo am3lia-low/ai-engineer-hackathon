@@ -37,7 +37,7 @@ const SPRITES = {
 };
 
 /* ---------- timing constants ---------- */
-const AUTONOMOUS_MS = 30000;
+const AUTONOMOUS_MS = 20000;
 const ACTIVE_MS = 4000;
 const SLEEP_AFTER_PUDDLE_MS = 90000;
 const PUDDLE_AFTER_AWAKE_MS = 22000;
@@ -221,6 +221,15 @@ function stopTalkingVisuals() {
 function applyProfileColor(profile) {
   if (!profile) return;
   $catWrapper.dataset.profile = profile;
+}
+
+// Per-profile ambient animation. The CSS reads this class to swap which
+// idle motion the cat does, so each voice has its own body language.
+const PROFILE_ANIMS = ["soft", "curious", "bright", "low", "whisper"];
+function applyProfileAnimation(profile) {
+  if (!profile) return;
+  PROFILE_ANIMS.forEach((p) => $catWrapper.classList.remove(`anim-${p}`));
+  $catWrapper.classList.add(`anim-${profile}`);
 }
 
 // Per-mode sprite + animation cue. Fires when the cat starts speaking
@@ -483,55 +492,34 @@ async function activeTick(force) {
   }
 }
 
-/* ---------- autonomous tick (alternates between quiet observer and proactive helper) ---------- */
-let autonomousCount = 0;
+/* ---------- autonomous tick — proactive every cycle ---------- */
 async function autonomousTick() {
   if (state.activeBusy || state.walking || state.playing || state.annoyed) return;
   if (Date.now() < state.speakingUntil) return;
-  autonomousCount++;
-  const useProactive = autonomousCount % 2 === 1;
-
-  if (useProactive) {
-    try {
-      const offer = await cat.proactiveAssist();
-      if (offer && offer.trim()) {
-        pokeAwake();
-        perk();
-        speakAndShow(offer, { mode: "curious" });
-      }
-    } catch (e) {
-      console.warn("[cat] autonomous proactive failed:", e);
-    }
-    return;
-  }
-
   try {
-    const memory = (await cat.readMemory()) || { observations: [], session_count: 0 };
-    const image = await cat.captureScreen();
-    if (!image) return;
-    const description = await cat.describeScreen(image);
-    const { response, tag } = await cat.getCatResponse(description, memory);
-
-    memory.session_count = (memory.session_count || 0) + 1;
-    memory.observations = memory.observations || [];
-    memory.observations.push({
-      at: new Date().toISOString(),
-      description,
-      tag: tag || "",
-      said: response || "",
-    });
-    if (memory.observations.length > 100) {
-      memory.observations = memory.observations.slice(-100);
-    }
-    await cat.writeMemory(memory);
-
-    if (response && response.trim()) {
+    const offer = await cat.proactiveAssist();
+    if (offer && offer.trim()) {
       pokeAwake();
       perk();
-      speakAndShow(response, { mode: "auto", tag });
+      speakAndShow(offer, { mode: "curious" });
+      // Also log to memory so the cat remembers what she's said.
+      try {
+        const memory = (await cat.readMemory()) || { observations: [], session_count: 0 };
+        memory.session_count = (memory.session_count || 0) + 1;
+        memory.observations = memory.observations || [];
+        memory.observations.push({
+          at: new Date().toISOString(),
+          tag: "proactive",
+          said: offer,
+        });
+        if (memory.observations.length > 100) {
+          memory.observations = memory.observations.slice(-100);
+        }
+        await cat.writeMemory(memory);
+      } catch {}
     }
   } catch (e) {
-    console.warn("[cat] autonomous tick failed:", e);
+    console.warn("[cat] autonomous tick failed:", e?.message || e);
   }
 }
 
@@ -549,9 +537,12 @@ window.addEventListener("mouseup", () => {
   const wasClick = lastMouse && !dragMoved;
   lastMouse = null;
   if (!wasClick) return;
+  // Visual ack on every click, even debounced — the user always sees response.
   pokeAwake();
   perk();
-  if (state.mode === "pdf" || state.mode === "email") {
+  // Refresh whatever active panel is visible; otherwise ask proactively.
+  const panelOpen = !$panel.classList.contains("hidden");
+  if (panelOpen && (state.mode === "pdf" || state.mode === "email")) {
     activeTick(true);
   } else {
     triggerProactiveAssist();
@@ -559,12 +550,21 @@ window.addEventListener("mouseup", () => {
 });
 
 let lastProactiveAt = 0;
+const CLICK_DEBOUNCE_MS = 1500;
 async function triggerProactiveAssist() {
-  if (state.activeBusy) return;
-  if (Date.now() - lastProactiveAt < 4000) return;
-  lastProactiveAt = Date.now();
+  const now = Date.now();
+  if (now - lastProactiveAt < CLICK_DEBOUNCE_MS) {
+    showBubble("mm. one moment.", 1800);
+    return;
+  }
+  if (state.activeBusy) {
+    showBubble("hold on, still reading.", 1800);
+    return;
+  }
+  lastProactiveAt = now;
+  showBubble("...let me look", 1500);
+  setSpinner(true);
   try {
-    setSpinner(true);
     const offer = await cat.proactiveAssist();
     setSpinner(false);
     if (offer && offer.trim()) {
@@ -572,11 +572,12 @@ async function triggerProactiveAssist() {
       perk();
       speakAndShow(offer, { mode: "curious" });
     } else {
-      speakAndShow("mm. all looks quiet.", { mode: "auto" });
+      speakAndShow("hm. nothing catches my eye right now.", { mode: "auto" });
     }
   } catch (e) {
     setSpinner(false);
     console.warn("[cat] proactive failed:", e?.message || e);
+    speakAndShow("the cat tried to look but slipped.", { mode: "auto" });
   }
 }
 
@@ -686,6 +687,7 @@ $voiceProfile.addEventListener("change", async (e) => {
 
 function applyVoiceProfileLook(profile) {
   applyProfileColor(profile);
+  applyProfileAnimation(profile);
   const look = VOICE_PROFILE_LOOK[profile];
   if (!look) return;
   if (state.walking || state.annoyed) return;
@@ -863,9 +865,29 @@ const GREETINGS = [
   "I'm watching now.",
 ];
 
+function warmupTTS() {
+  if (!("speechSynthesis" in window)) return;
+  try {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", () => {
+      const n = window.speechSynthesis.getVoices().length;
+      console.log(`[cat] tts voices loaded: ${n}`);
+    });
+    // Silent warmup utterance — Chromium-based shells often need this once
+    // before later .speak() calls actually produce audio.
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+  } catch (e) {
+    console.warn("[cat] tts warmup failed:", e?.message || e);
+  }
+}
+
 async function init() {
   await loadSettings();
   applyProfileColor(state.settings.voiceProfile);
+  applyProfileAnimation(state.settings.voiceProfile);
+  warmupTTS();
   state.lastActiveAt = Date.now() - PUDDLE_AFTER_AWAKE_MS;
   setSprite("puddle");
 
