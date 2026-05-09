@@ -35,7 +35,16 @@ body {
   cursor: grab;
   animation: breathe 3.6s ease-in-out infinite;
   transform-origin: 50% 80%;
+  --aura: rgba(255, 220, 180, 0.55);
+  --aura-strong: rgba(255, 220, 180, 0.9);
 }
+
+/* voice-profile color tints (each profile gives the cat a different aura) */
+#cat-wrapper[data-profile="soft"]    { --aura: rgba(255, 220, 180, 0.55); --aura-strong: rgba(255, 220, 180, 0.9); }
+#cat-wrapper[data-profile="curious"] { --aura: rgba(255, 165, 100, 0.65); --aura-strong: rgba(255, 165, 100, 1.0); }
+#cat-wrapper[data-profile="bright"]  { --aura: rgba(255, 230, 110, 0.65); --aura-strong: rgba(255, 230, 110, 1.0); }
+#cat-wrapper[data-profile="low"]     { --aura: rgba(120, 180, 255, 0.55); --aura-strong: rgba(120, 180, 255, 0.95); }
+#cat-wrapper[data-profile="whisper"] { --aura: rgba(200, 170, 255, 0.55); --aura-strong: rgba(200, 170, 255, 0.95); }
 
 #cat-wrapper:active {
   cursor: grabbing;
@@ -49,11 +58,31 @@ body {
   animation: shake 360ms ease-in-out;
 }
 
+#cat-wrapper.talking {
+  animation: talk-bob 0.42s ease-in-out infinite;
+}
+
+/* aura halo glows behind the cat in the chosen profile color */
 #cat-stack {
   position: relative;
   width: 100%;
   height: 100%;
   transform-origin: 50% 80%;
+}
+
+#cat-stack::before {
+  content: "";
+  position: absolute;
+  inset: -14%;
+  background: radial-gradient(ellipse at 50% 70%, var(--aura) 0%, transparent 62%);
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.85;
+  transition: background 420ms ease, opacity 420ms ease;
+}
+
+#cat-wrapper.talking #cat-stack::before {
+  animation: halo-pulse 0.9s ease-in-out infinite;
 }
 
 #cat-stack.perk {
@@ -79,9 +108,17 @@ body {
   height: 100%;
   object-fit: contain;
   pointer-events: none;
-  filter: drop-shadow(0 12px 20px rgba(0, 0, 0, 0.38));
+  filter:
+    drop-shadow(0 0 12px var(--aura))
+    drop-shadow(0 12px 20px rgba(0, 0, 0, 0.38));
   opacity: 0;
-  transition: opacity 240ms ease;
+  transition: opacity 240ms ease, filter 420ms ease;
+}
+
+#cat-wrapper.talking .cat-sprite.active {
+  filter:
+    drop-shadow(0 0 18px var(--aura-strong))
+    drop-shadow(0 12px 20px rgba(0, 0, 0, 0.38));
 }
 
 .cat-sprite.active {
@@ -142,6 +179,47 @@ body {
 #settings-btn:hover {
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
+}
+
+#mic-btn {
+  position: absolute;
+  top: 4px;
+  right: 32px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(244, 240, 232, 0.7);
+  font-size: 11px;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 200ms ease, background 160ms ease, box-shadow 200ms ease;
+  z-index: 10;
+}
+
+#cat-wrapper:hover #mic-btn {
+  opacity: 1;
+}
+
+#mic-btn:hover {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+#mic-btn.listening {
+  opacity: 1;
+  background: rgba(255, 80, 80, 0.85);
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(255, 80, 80, 0.25);
+  animation: mic-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(255, 80, 80, 0.25); }
+  50%      { box-shadow: 0 0 0 7px rgba(255, 80, 80, 0.10); }
 }
 
 /* ---------- speech bubble (autonomous) ---------- */
@@ -542,4 +620,15 @@ body {
 @keyframes bounce {
   0%, 100% { opacity: 0.3; transform: translateY(0); }
   50% { opacity: 1; transform: translateY(-4px); }
+}
+
+@keyframes talk-bob {
+  0%, 100% { transform: scale(1) translateY(0); }
+  35% { transform: scale(1.045) translateY(-3px); }
+  65% { transform: scale(1.025) translateY(-1px); }
+}
+
+@keyframes halo-pulse {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.12); }
 }

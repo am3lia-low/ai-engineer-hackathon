@@ -17,6 +17,7 @@ const $bubble = document.getElementById("bubble");
 const $catWrapper = document.getElementById("cat-wrapper");
 const $catStack = document.getElementById("cat-stack");
 const $settingsBtn = document.getElementById("settings-btn");
+const $micBtn = document.getElementById("mic-btn");
 
 const $settingsOverlay = document.getElementById("settings-overlay");
 const $settingsClose = document.getElementById("settings-close");
@@ -203,37 +204,116 @@ function stopAudio() {
     state.currentAudio = null;
   }
   $bubble.classList.remove("speaking");
+  $catWrapper.classList.remove("talking");
+  if ("speechSynthesis" in window) {
+    try { window.speechSynthesis.cancel(); } catch {}
+  }
+}
+
+function startTalkingVisuals() {
+  $catWrapper.classList.add("talking");
+}
+function stopTalkingVisuals() {
+  $catWrapper.classList.remove("talking");
+  $bubble.classList.remove("speaking");
+}
+
+function applyProfileColor(profile) {
+  if (!profile) return;
+  $catWrapper.dataset.profile = profile;
+}
+
+// Per-mode sprite + animation cue. Fires when the cat starts speaking
+// so each work type *looks* different, not just sounds different.
+const MODE_SPRITE_CUE = {
+  pdf:     { sprite: "awake", anim: "tilt-left",  animDur: 900 },
+  email:   { sprite: "awake", anim: "tilt-right", animDur: 900 },
+  curious: { sprite: "awake", anim: "perk",       animDur: 700 },
+  auto:    { sprite: null,    anim: null,         animDur: 0   },
+  play:    { sprite: "play",  anim: null,         animDur: 0   },
+};
+
+// Voice profile → resting sprite + tagline spoken when the user changes profile.
+const VOICE_PROFILE_LOOK = {
+  soft:    { sprite: "puddle", tagline: "softly here." },
+  curious: { sprite: "awake",  tagline: "ears up. what's that?" },
+  bright:  { sprite: "play",   tagline: "ready to play." },
+  low:     { sprite: "puddle", tagline: "settled. low and slow." },
+  whisper: { sprite: "sleep",  tagline: "shh. listening." },
+};
+
+function applyModeCue(mode) {
+  const cue = MODE_SPRITE_CUE[mode];
+  if (!cue) return;
+  if (state.walking || state.annoyed) return;
+  if (cue.sprite && state.sprite !== cue.sprite) {
+    if (state.sprite !== "play") setSprite(cue.sprite);
+  }
+  if (cue.anim) playOnce(cue.anim, cue.animDur);
+}
+
+function speakWithBrowserTTS(text) {
+  if (!("speechSynthesis" in window)) return false;
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 0.95;
+    u.pitch = 1.05;
+    u.volume = 0.85;
+    $bubble.classList.add("speaking");
+    startTalkingVisuals();
+    u.onstart = () => startTalkingVisuals();
+    u.onend = () => stopTalkingVisuals();
+    u.onerror = () => stopTalkingVisuals();
+    window.speechSynthesis.speak(u);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function speakAndShow(text, { mode } = {}) {
   if (!text || !text.trim()) return;
   showBubble(text);
   pokeAwake();
+  applyModeCue(mode);
   state.speakingUntil = Date.now() + Math.min(text.length * 70, 12000);
 
-  if (!state.settings.voiceEnabled || !state.hasVoiceKey) return;
+  if (!state.settings.voiceEnabled) return;
 
-  try {
-    const res = await cat.speak({
-      text,
-      mode,
-      profile: state.settings.voiceProfile,
-    });
-    if (!res || !res.ok || !res.audio) return;
-
-    stopAudio();
-    const audio = new Audio(`data:audio/mpeg;base64,${res.audio}`);
-    audio.volume = 0.75;
-    state.currentAudio = audio;
-    $bubble.classList.add("speaking");
-    audio.onended = () => {
-      $bubble.classList.remove("speaking");
-      if (state.currentAudio === audio) state.currentAudio = null;
-    };
-    await audio.play().catch(() => {});
-  } catch (e) {
-    console.warn("[cat] voice failed:", e);
+  if (state.hasVoiceKey) {
+    try {
+      const res = await cat.speak({
+        text,
+        mode,
+        profile: state.settings.voiceProfile,
+      });
+      if (res && res.ok && res.audio) {
+        stopAudio();
+        const audio = new Audio(`data:audio/mpeg;base64,${res.audio}`);
+        audio.volume = 0.75;
+        state.currentAudio = audio;
+        $bubble.classList.add("speaking");
+        audio.onplay = () => startTalkingVisuals();
+        audio.onended = () => {
+          stopTalkingVisuals();
+          if (state.currentAudio === audio) state.currentAudio = null;
+        };
+        audio.onerror = () => stopTalkingVisuals();
+        await audio.play().catch(() => stopTalkingVisuals());
+        if (res.profile) applyProfileColor(res.profile);
+        return;
+      }
+      // ElevenLabs unavailable — fall through to browser TTS.
+      if (res && !res.ok) {
+        console.warn("[cat] elevenlabs unavailable, using browser TTS:", res.detail || res.reason || "");
+      }
+    } catch (e) {
+      console.warn("[cat] voice failed, using browser TTS:", e?.message || e);
+    }
   }
+
+  speakWithBrowserTTS(text);
 }
 
 /* ---------- active panel (pdf / email) ---------- */
@@ -344,6 +424,32 @@ async function handlePdf(ctx) {
   }
 }
 
+// Tracks the user's foreground app/title across ALL modes (including idle),
+// so the cat can react when the user switches windows even within idle.
+let lastFrontKey = "";
+let lastFrontReactionAt = 0;
+const FRONT_REACTION_COOLDOWN_MS = 12000;
+
+function reactToFrontSwitch(ctx) {
+  const frontKey = `${ctx?.appName || ""}|${ctx?.title || ""}`;
+  if (!frontKey || frontKey === lastFrontKey) return;
+  const wasFirstSeen = lastFrontKey === "";
+  lastFrontKey = frontKey;
+  // Skip the very first sample on launch so we don't fire a reaction on init.
+  if (wasFirstSeen) return;
+
+  // Always give visible feedback that the cat noticed.
+  pokeAwake();
+  perk();
+
+  // Rate-limit the chatty side: at most once per cooldown, kick the
+  // autonomous tick so the cat can comment on what the user clicked into.
+  const now = Date.now();
+  if (now - lastFrontReactionAt < FRONT_REACTION_COOLDOWN_MS) return;
+  lastFrontReactionAt = now;
+  setTimeout(autonomousTick, 600);
+}
+
 async function activeTick(force) {
   if (state.activeBusy) return;
   let ctx;
@@ -353,6 +459,9 @@ async function activeTick(force) {
     console.warn("[cat] getContext failed:", e);
     return;
   }
+
+  reactToFrontSwitch(ctx);
+
   const fp = fingerprint(ctx);
   if (!force && fp === state.activeFp) return;
   state.activeFp = fp;
@@ -374,9 +483,28 @@ async function activeTick(force) {
   }
 }
 
-/* ---------- autonomous tick (memory + screen + cat-response) ---------- */
+/* ---------- autonomous tick (alternates between quiet observer and proactive helper) ---------- */
+let autonomousCount = 0;
 async function autonomousTick() {
   if (state.activeBusy || state.walking || state.playing || state.annoyed) return;
+  if (Date.now() < state.speakingUntil) return;
+  autonomousCount++;
+  const useProactive = autonomousCount % 2 === 1;
+
+  if (useProactive) {
+    try {
+      const offer = await cat.proactiveAssist();
+      if (offer && offer.trim()) {
+        pokeAwake();
+        perk();
+        speakAndShow(offer, { mode: "curious" });
+      }
+    } catch (e) {
+      console.warn("[cat] autonomous proactive failed:", e);
+    }
+    return;
+  }
+
   try {
     const memory = (await cat.readMemory()) || { observations: [], session_count: 0 };
     const image = await cat.captureScreen();
@@ -412,7 +540,7 @@ let lastMouse = null;
 let dragMoved = false;
 
 $catWrapper.addEventListener("mousedown", (e) => {
-  if (e.target === $settingsBtn) return;
+  if (e.target === $settingsBtn || e.target === $micBtn) return;
   lastMouse = { x: e.screenX, y: e.screenY };
   dragMoved = false;
 });
@@ -420,12 +548,37 @@ $catWrapper.addEventListener("mousedown", (e) => {
 window.addEventListener("mouseup", () => {
   const wasClick = lastMouse && !dragMoved;
   lastMouse = null;
-  if (wasClick) {
-    pokeAwake();
-    perk();
+  if (!wasClick) return;
+  pokeAwake();
+  perk();
+  if (state.mode === "pdf" || state.mode === "email") {
     activeTick(true);
+  } else {
+    triggerProactiveAssist();
   }
 });
+
+let lastProactiveAt = 0;
+async function triggerProactiveAssist() {
+  if (state.activeBusy) return;
+  if (Date.now() - lastProactiveAt < 4000) return;
+  lastProactiveAt = Date.now();
+  try {
+    setSpinner(true);
+    const offer = await cat.proactiveAssist();
+    setSpinner(false);
+    if (offer && offer.trim()) {
+      pokeAwake();
+      perk();
+      speakAndShow(offer, { mode: "curious" });
+    } else {
+      speakAndShow("mm. all looks quiet.", { mode: "auto" });
+    }
+  } catch (e) {
+    setSpinner(false);
+    console.warn("[cat] proactive failed:", e?.message || e);
+  }
+}
 
 window.addEventListener("mousemove", (e) => {
   if (!lastMouse) return;
@@ -528,7 +681,19 @@ $voiceToggle.addEventListener("change", async (e) => {
 $voiceProfile.addEventListener("change", async (e) => {
   state.settings.voiceProfile = e.target.value;
   await cat.setSettings({ voiceProfile: e.target.value });
+  applyVoiceProfileLook(e.target.value);
 });
+
+function applyVoiceProfileLook(profile) {
+  applyProfileColor(profile);
+  const look = VOICE_PROFILE_LOOK[profile];
+  if (!look) return;
+  if (state.walking || state.annoyed) return;
+  if (look.sprite) setSprite(look.sprite);
+  state.lastActiveAt = Date.now();
+  perk();
+  if (look.tagline) speakAndShow(look.tagline, { mode: "auto" });
+}
 
 $autoVoice.addEventListener("change", async (e) => {
   state.settings.autoVoiceByContext = e.target.checked;
@@ -552,11 +717,159 @@ function scheduleNextPlay() {
   }, next);
 }
 
+/* ---------- microphone: user → cat conversation (MediaRecorder + Whisper) ---------- */
+let mediaStream = null;
+let mediaRecorder = null;
+let recordedChunks = [];
+let listening = false;
+let recordedMimeType = "audio/webm";
+
+const MAX_RECORD_MS = 15000; // safety cap
+let recordTimeout = null;
+
+function setupMic() {
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    $micBtn.style.display = "none";
+    console.warn("[cat] MediaRecorder not available — mic disabled.");
+    return;
+  }
+  // Pick a mime the browser actually supports.
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  recordedMimeType =
+    candidates.find((m) => MediaRecorder.isTypeSupported(m)) || "audio/webm";
+}
+
+function startListeningUI() {
+  listening = true;
+  $micBtn.classList.add("listening");
+  $micBtn.textContent = "●";
+  pokeAwake();
+  perk();
+}
+
+function stopListeningUI() {
+  listening = false;
+  $micBtn.classList.remove("listening");
+  $micBtn.textContent = "🎙";
+}
+
+async function startRecording() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    console.warn("[cat] microphone permission denied:", e?.message || e);
+    showBubble("I can't hear without microphone access.", 3500);
+    return;
+  }
+
+  recordedChunks = [];
+  try {
+    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: recordedMimeType });
+  } catch {
+    mediaRecorder = new MediaRecorder(mediaStream);
+  }
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = async () => {
+    const blob = new Blob(recordedChunks, { type: recordedMimeType });
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((t) => t.stop());
+      mediaStream = null;
+    }
+    stopListeningUI();
+    if (blob.size < 800) return; // probably silence/no speech
+    try {
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      const res = await cat.transcribe(buf, recordedMimeType);
+      if (res?.ok && res.text) {
+        handleUserSpeech(res.text);
+      } else {
+        console.warn("[cat] transcribe failed:", res?.reason, res?.detail || "");
+        if (res?.reason === "no-api-key") {
+          showBubble("I need an OPENAI_API_KEY to hear you.", 3500);
+        }
+      }
+    } catch (e) {
+      console.warn("[cat] transcribe exception:", e?.message || e);
+    }
+  };
+
+  mediaRecorder.start();
+  startListeningUI();
+
+  // Auto-stop after MAX_RECORD_MS so a forgotten record session doesn't
+  // hold the mic open forever.
+  clearTimeout(recordTimeout);
+  recordTimeout = setTimeout(() => {
+    if (listening) stopRecording();
+  }, MAX_RECORD_MS);
+}
+
+function stopRecording() {
+  clearTimeout(recordTimeout);
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    try {
+      mediaRecorder.stop();
+    } catch {}
+  } else {
+    stopListeningUI();
+  }
+}
+
+async function handleUserSpeech(transcript) {
+  if (!transcript || !transcript.trim()) return;
+  showBubble("you: " + transcript, 4500);
+  pokeAwake();
+  perk();
+  try {
+    const reply = await cat.replyToUser(transcript);
+    if (reply && reply.trim()) {
+      setTimeout(() => speakAndShow(reply, { mode: "curious" }), 700);
+    } else {
+      setTimeout(() => speakAndShow("mm.", { mode: "auto" }), 700);
+    }
+  } catch (e) {
+    console.warn("[cat] reply failed:", e?.message || e);
+  }
+}
+
+$micBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (listening) stopRecording();
+  else startRecording();
+});
+
+// Stop the wrapper drag handler from picking up mic clicks.
+$micBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+
+/* ---------- mouse-question handler (from main process) ---------- */
+function handleMouseQuestion(question) {
+  if (!question || !question.trim()) return;
+  if (state.activeBusy) return;
+  if (Date.now() < state.speakingUntil) return;
+  pokeAwake();
+  perk();
+  speakAndShow(question, { mode: "curious" });
+}
+
 /* ---------- init ---------- */
+const GREETINGS = [
+  "hello. I'm here.",
+  "oh, you came back.",
+  "mm. settled.",
+  "I'm watching now.",
+];
+
 async function init() {
   await loadSettings();
+  applyProfileColor(state.settings.voiceProfile);
   state.lastActiveAt = Date.now() - PUDDLE_AFTER_AWAKE_MS;
   setSprite("puddle");
+
+  setupMic();
 
   setInterval(maybeSleep, 4000);
   setInterval(tiltSometimes, 8500);
@@ -565,8 +878,20 @@ async function init() {
   scheduleNextWalk();
   scheduleNextPlay();
 
+  if (cat.onMouseQuestion) {
+    cat.onMouseQuestion(handleMouseQuestion);
+  }
+
   activeTick(true);
   setTimeout(autonomousTick, 2000);
+
+  // Startup greeting so the user immediately knows voice works.
+  setTimeout(() => {
+    pokeAwake();
+    perk();
+    const line = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+    speakAndShow(line, { mode: "auto" });
+  }, 1200);
 }
 
 init();
