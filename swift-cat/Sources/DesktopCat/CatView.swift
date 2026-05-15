@@ -1,10 +1,14 @@
 import AppKit
 import QuartzCore
 
-/// Hosts the stacked sprite CALayers and handles drag/click.
-/// Click without drag toggles between puddle and awake — that's only
-/// the temporary Phase 1 affordance to prove the state-swap pipeline.
+/// Hosts the stacked sprite CALayers and handles drag/click. State is driven
+/// from outside via `setState(_:)`; click without drag invokes `onClick` so
+/// the coordinator decides what a click means (Phase 2: wake + capture proof;
+/// Phase 3: proactive brain call).
 final class CatView: NSView {
+
+    /// Fires once per click-without-drag.
+    var onClick: (() -> Void)?
 
     private let puddleLayer = CALayer()
     private let awakeLayer  = CALayer()
@@ -127,11 +131,7 @@ final class CatView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if !didDrag {
-            // Temporary Phase 1 affordance: click swaps sprite.
-            let next: CatSpriteState = (currentState == .puddle) ? .awake : .puddle
-            setState(next)
-        }
+        if !didDrag { onClick?() }
     }
 
     // Default hit test (whole bounds) is fine for Phase 1 — matches Electron.

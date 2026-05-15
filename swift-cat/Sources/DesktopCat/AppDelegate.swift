@@ -2,17 +2,36 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var catWindow: CatWindow?
+    private var coordinator: CatCoordinator?
+    private var settings: SettingsStore?
+    private var memory: MemoryStore?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenuShortcuts()
+
+        let s = SettingsStore()
+        let m = MemoryStore()
+        self.settings = s
+        self.memory = m
 
         let window = CatWindow()
         window.makeKeyAndOrderFront(nil)
         self.catWindow = window
 
-        // Bring the app forward on first launch so the cat appears immediately
-        // instead of waiting for a system-driven event to surface it.
+        if let view = window.contentView as? CatView {
+            let c = CatCoordinator(catView: view, settings: s, memory: m)
+            c.start()
+            self.coordinator = c
+        } else {
+            print("[cat] WARNING: contentView is not a CatView — coordinator not started")
+        }
+
+        // Surface the cat on first launch so it's visible immediately.
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        coordinator?.stop()
     }
 
     /// .accessory policy hides the menu bar, but NSApp.mainMenu still resolves
